@@ -108,6 +108,7 @@ export function DisplayView({ data }: { data: GameData }) {
           <AllTeamsSeedTable
             teams={displayTeams}
             profitByTeam={seedProfitByTeam}
+            topN={5}
             scroll
           />
         </div>
