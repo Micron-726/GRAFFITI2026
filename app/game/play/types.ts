@@ -3,9 +3,16 @@ export type Round =
   | "series-a"
   | "series-b"
   | "series-c"
+  | "final"
   | "ended";
 
-export type Phase = "idle" | "stock" | "results" | "matching";
+export type Phase =
+  | "idle"
+  | "stock"
+  | "results"
+  | "matching"
+  | "preference"
+  | "final-result";
 
 export type GameState = {
   current_round: Round;
@@ -20,11 +27,30 @@ export type Company = {
   name: string;
   min_order_price: number;
   sort_order: number;
+  /** 최종 팀 매칭 단계에서 이 회사에 배정될 수 있는 팀 수 상한 */
+  max_slots: number;
+};
+
+/** 최종 팀 매칭용 참가자 지망 (rank=1 이 1지망) */
+export type Preference = {
+  team_username: string;
+  company_id: number;
+  rank: number;
+};
+
+/** 최종 팀 매칭 결과: 팀 하나당 회사 하나 (미매칭 팀은 아예 행 없음) */
+export type FinalMatch = {
+  team_username: string;
+  company_id: number;
+  /** 배정된 지망 순위 (1 이면 1지망 배정, null 이면 배정 실패 팀은 애초에 이 테이블에 없음) */
+  matched_rank: number;
 };
 
 export type Team = {
   username: string;
   seed: number;
+  /** 디스플레이 화면·순위용 스냅샷. stock/matching 진입 시 freeze. NULL 이면 실시간 seed 사용. */
+  display_seed: number | null;
 };
 
 export type Ticket = {
@@ -82,6 +108,8 @@ export type GameData = {
   bids: Bid[];
   matchingResults: MatchingResult[];
   ticketSales: TicketSale[];
+  preferences: Preference[];
+  finalMatches: FinalMatch[];
   /** 인증 env 에 등록된, admin 이 아닌 사용자 목록 */
   configuredUsernames: string[];
 };
@@ -91,6 +119,7 @@ export const ROUND_LABELS: Record<Round, string> = {
   "series-a": "Series A",
   "series-b": "Series B",
   "series-c": "Series C",
+  final: "최종 팀 매칭",
   ended: "종료",
 };
 
@@ -99,6 +128,8 @@ export const PHASE_LABELS: Record<Phase, string> = {
   stock: "주식 단계",
   results: "결과 발표",
   matching: "매칭권 단계",
+  preference: "지망 제출",
+  "final-result": "매칭 결과",
 };
 
 const USERNAME_COLLATOR = new Intl.Collator("en", {
@@ -138,12 +169,19 @@ export function latestSettledRound(
 /** "다음 단계로 넘어가기" 버튼에 표시할 다음 상태 설명 (UI 전용) */
 export function describeNext(round: Round, phase: Phase): string {
   if (round === "ended") return "게임이 종료되었습니다";
+  if (round === "final") {
+    if (phase === "preference") return "최종 팀 매칭 결과 발표";
+    if (phase === "final-result") return "게임 종료";
+    return "최종 팀 매칭 · 지망 제출";
+  }
   if (phase === "idle") return `${ROUND_LABELS[round]} · 주식 단계 시작`;
   if (phase === "stock") return `${ROUND_LABELS[round]} · 결과 발표 (수익률 공식 정산)`;
   if (phase === "results") return `${ROUND_LABELS[round]} · 매칭권 단계`;
   if (phase === "matching") {
     const idx = PLAYABLE_ORDER.indexOf(round);
-    if (idx < 0 || idx >= PLAYABLE_ORDER.length - 1) return "게임 종료";
+    if (idx < 0 || idx >= PLAYABLE_ORDER.length - 1) {
+      return "최종 팀 매칭 · 지망 제출";
+    }
     return `${ROUND_LABELS[PLAYABLE_ORDER[idx + 1]]} 라운드 · 대기`;
   }
   return "";

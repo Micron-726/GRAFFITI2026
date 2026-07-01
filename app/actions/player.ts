@@ -10,6 +10,8 @@ import {
   opSetBid,
   opClearBid,
   opSellTickets,
+  opSetPreference,
+  opClearPreference,
 } from "@/lib/game";
 
 export type ActionResult = { error?: string };
@@ -114,6 +116,36 @@ export async function playerSellTickets(
       throw new Error("지금은 매칭권을 팔 수 있는 단계가 아닙니다");
     }
     await opSellTickets(state.current_round, username, companyId, count);
+    refresh();
+  });
+}
+
+// 최종 팀 매칭 지망 제출 — final/preference 단계에서만 가능
+export async function playerSetPreference(
+  companyId: number,
+  rank: number,
+): Promise<ActionResult> {
+  return guard(async (username) => {
+    if (!Number.isInteger(companyId)) throw new Error("잘못된 회사");
+    const state = await readGameState();
+    if (state.current_round !== "final" || state.current_phase !== "preference") {
+      throw new Error("지금은 지망을 제출할 수 있는 단계가 아닙니다");
+    }
+    await opSetPreference(username, companyId, rank);
+    refresh();
+  });
+}
+
+export async function playerClearPreference(
+  companyId: number,
+): Promise<ActionResult> {
+  return guard(async (username) => {
+    if (!Number.isInteger(companyId)) throw new Error("잘못된 회사");
+    const state = await readGameState();
+    if (state.current_round !== "final" || state.current_phase !== "preference") {
+      throw new Error("지금은 지망을 취소할 수 있는 단계가 아닙니다");
+    }
+    await opClearPreference(username, companyId);
     refresh();
   });
 }

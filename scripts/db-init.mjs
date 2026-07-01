@@ -18,6 +18,7 @@ const sql = neon(url);
 const statements = [
   // 싱글톤 게임 상태 + 게임 설정 (팀 수, 평균 시드머니).
   // 시드 단위는 won, 만원이 기본 단위 (10,000 의 배수). default = 1천만원 (10,000,000).
+  // ★ round/phase 값 CHECK 은 앱 레이어에서 처리 (신규 phase 추가 시 DB 마이그레이션 부담 회피).
   `CREATE TABLE IF NOT EXISTS game_state (
      id INTEGER PRIMARY KEY DEFAULT 1,
      current_round TEXT NOT NULL DEFAULT 'seed',
@@ -25,24 +26,41 @@ const statements = [
      team_count INTEGER NOT NULL DEFAULT 25 CHECK (team_count >= 1),
      avg_initial_seed INTEGER NOT NULL DEFAULT 10000000 CHECK (avg_initial_seed >= 1),
      matching_top_n INTEGER NOT NULL DEFAULT 2 CHECK (matching_top_n >= 0),
-     CHECK (id = 1),
-     CHECK (current_round IN ('seed','series-a','series-b','series-c','ended')),
-     CHECK (current_phase IN ('idle','stock','results','matching'))
+     CHECK (id = 1)
    )`,
 
   // 기존 DB 에 컬럼 추가 (없으면 무시). db:reset 안 해도 새 기능 동작하도록.
   `ALTER TABLE game_state ADD COLUMN IF NOT EXISTS matching_top_n INTEGER NOT NULL DEFAULT 2`,
 
+  // 기존 DB 의 round/phase CHECK 제약 제거 (final/preference 추가 대응).
+  // 익명 CHECK 이라 이름을 pg_constraint 에서 찾아 지움.
+  `DO $$
+   DECLARE r RECORD;
+   BEGIN
+     FOR r IN SELECT conname FROM pg_constraint
+              WHERE conrelid = 'game_state'::regclass AND contype = 'c'
+                AND pg_get_constraintdef(oid) LIKE '%current_round%' LOOP
+       EXECUTE 'ALTER TABLE game_state DROP CONSTRAINT ' || quote_ident(r.conname);
+     END LOOP;
+     FOR r IN SELECT conname FROM pg_constraint
+              WHERE conrelid = 'game_state'::regclass AND contype = 'c'
+                AND pg_get_constraintdef(oid) LIKE '%current_phase%' LOOP
+       EXECUTE 'ALTER TABLE game_state DROP CONSTRAINT ' || quote_ident(r.conname);
+     END LOOP;
+   END $$`,
+
   `INSERT INTO game_state (id) VALUES (1) ON CONFLICT (id) DO NOTHING`,
 
   // sort_order: 사용자가 드래그로 회사 순서를 바꿀 때 사용. ID 는 SERIAL 이라 삭제 시 빈
   // 자리가 생기지만, UI 에선 sort_order 기준으로 "순번" 1..N 을 표시함.
+  // max_slots: 최종 팀 매칭 단계에서 이 회사에 배정될 수 있는 팀 수 상한.
   `CREATE TABLE IF NOT EXISTS companies (
      id SERIAL PRIMARY KEY,
      name TEXT UNIQUE NOT NULL,
      min_order_price INTEGER NOT NULL DEFAULT 0 CHECK (min_order_price >= 0),
      initial_min_order_price INTEGER NOT NULL DEFAULT 0 CHECK (initial_min_order_price >= 0),
      sort_order INTEGER NOT NULL DEFAULT 0,
+     max_slots INTEGER NOT NULL DEFAULT 1 CHECK (max_slots >= 0),
      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
    )`,
 
@@ -50,12 +68,18 @@ const statements = [
   // 기존 DB 마이그레이션: 컬럼 없으면 추가하고 현재 min_order_price 값으로 채움.
   `ALTER TABLE companies ADD COLUMN IF NOT EXISTS initial_min_order_price INTEGER NOT NULL DEFAULT 0 CHECK (initial_min_order_price >= 0)`,
   `UPDATE companies SET initial_min_order_price = min_order_price WHERE initial_min_order_price = 0 AND min_order_price > 0`,
+  `ALTER TABLE companies ADD COLUMN IF NOT EXISTS max_slots INTEGER NOT NULL DEFAULT 1 CHECK (max_slots >= 0)`,
 
   // 시드는 won 단위, 10,000 의 배수만 들어옴 (앱에서 강제). DB CHECK 로는 음수만 막음.
+  // display_seed: stock/matching 단계 진입 시 seed 를 박제 → 디스플레이·순위 표시용.
+  // NULL 이면 실시간 seed 를 그대로 사용.
   `CREATE TABLE IF NOT EXISTS teams (
      username TEXT PRIMARY KEY,
-     seed INTEGER NOT NULL DEFAULT 0 CHECK (seed >= 0)
+     seed INTEGER NOT NULL DEFAULT 0 CHECK (seed >= 0),
+     display_seed INTEGER
    )`,
+
+  `ALTER TABLE teams ADD COLUMN IF NOT EXISTS display_seed INTEGER`,
 
   `CREATE TABLE IF NOT EXISTS tickets (
      team_username TEXT NOT NULL REFERENCES teams(username) ON DELETE CASCADE,
@@ -113,6 +137,22 @@ const statements = [
      min_order_price INTEGER NOT NULL CHECK (min_order_price >= 0),
      sold_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
      PRIMARY KEY (round, team_username, company_id)
+   )`,
+
+  // 최종 팀 매칭용 참가자 지망 (rank=1 이 1지망). (team, company) 로 유일.
+  `CREATE TABLE IF NOT EXISTS preferences (
+     team_username TEXT NOT NULL REFERENCES teams(username) ON DELETE CASCADE,
+     company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+     rank INTEGER NOT NULL CHECK (rank >= 1),
+     PRIMARY KEY (team_username, company_id),
+     UNIQUE (team_username, rank)
+   )`,
+
+  // 최종 매칭 결과 — 팀 하나당 회사 하나. 미매칭 팀은 아예 행 없음.
+  `CREATE TABLE IF NOT EXISTS final_matches (
+     team_username TEXT PRIMARY KEY REFERENCES teams(username) ON DELETE CASCADE,
+     company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+     matched_rank INTEGER NOT NULL CHECK (matched_rank >= 1)
    )`,
 ];
 

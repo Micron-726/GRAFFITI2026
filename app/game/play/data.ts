@@ -5,10 +5,12 @@ import { getAllUsernames } from "@/lib/users";
 import type {
   Bid,
   Company,
+  FinalMatch,
   GameData,
   GameState,
   Investment,
   MatchingResult,
+  Preference,
   RoundResult,
   Team,
   Ticket,
@@ -29,8 +31,8 @@ export async function fetchGameData(
     roundResultRows,
   ] = await Promise.all([
     sql`SELECT current_round, current_phase, team_count, avg_initial_seed, matching_top_n FROM game_state WHERE id = 1`,
-    sql`SELECT id, name, min_order_price, sort_order FROM companies ORDER BY sort_order, id`,
-    sql`SELECT username, seed FROM teams ORDER BY username`,
+    sql`SELECT id, name, min_order_price, sort_order, max_slots FROM companies ORDER BY sort_order, id`,
+    sql`SELECT username, seed, display_seed FROM teams ORDER BY username`,
     sql`SELECT team_username, company_id, count FROM tickets`,
     sql`SELECT round, team_username, company_id, amount FROM investments`,
     sql`SELECT round, company_id, yield_pct FROM round_results`,
@@ -71,6 +73,31 @@ export async function fetchGameData(
     }
   }
 
+  // 지망은 admin 은 전체 조회, 플레이어는 본인 것만 조회.
+  // 최종 매칭 결과는 발표 후 모두 공개.
+  let preferenceRows: Preference[] = [];
+  try {
+    preferenceRows = isAdmin
+      ? ((await sql`
+          SELECT team_username, company_id, rank FROM preferences
+        `) as Preference[])
+      : ((await sql`
+          SELECT team_username, company_id, rank FROM preferences
+          WHERE team_username = ${username}
+        `) as Preference[]);
+  } catch (e) {
+    if (!(e instanceof Error) || !e.message.includes("preferences")) throw e;
+  }
+
+  let finalMatchRows: FinalMatch[] = [];
+  try {
+    finalMatchRows = (await sql`
+      SELECT team_username, company_id, matched_rank FROM final_matches
+    `) as FinalMatch[];
+  } catch (e) {
+    if (!(e instanceof Error) || !e.message.includes("final_matches")) throw e;
+  }
+
   const configuredUsernames = getAllUsernames()
     .filter((u) => !isAdminUsername(u))
     .sort(compareUsernames);
@@ -99,11 +126,16 @@ export async function fetchGameData(
       id: Number(c.id),
       min_order_price: Number(c.min_order_price),
       sort_order: Number(c.sort_order),
+      max_slots: Number(c.max_slots ?? 1),
     })),
     teams: (teamRows as Team[])
       .map((t) => ({
         ...t,
         seed: Number(t.seed),
+        display_seed:
+          t.display_seed === null || t.display_seed === undefined
+            ? null
+            : Number(t.display_seed),
       }))
       .sort((a, b) => compareUsernames(a.username, b.username)),
     tickets: (ticketRows as Ticket[]).map((t) => ({
@@ -141,6 +173,16 @@ export async function fetchGameData(
       count: Number(s.count),
       refund_amount: Number(s.refund_amount),
       min_order_price: Number(s.min_order_price),
+    })),
+    preferences: preferenceRows.map((p) => ({
+      ...p,
+      company_id: Number(p.company_id),
+      rank: Number(p.rank),
+    })),
+    finalMatches: finalMatchRows.map((m) => ({
+      ...m,
+      company_id: Number(m.company_id),
+      matched_rank: Number(m.matched_rank),
     })),
     configuredUsernames,
   };

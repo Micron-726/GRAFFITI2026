@@ -8,9 +8,20 @@ import {
   playerSetBid,
   playerClearBid,
   playerSellTickets,
+  playerSetPreference,
+  playerClearPreference,
   type ActionResult,
 } from "@/app/actions/player";
-import type { Bid, Company, GameData, Investment, Ticket } from "./types";
+import type {
+  Bid,
+  Company,
+  FinalMatch,
+  GameData,
+  Investment,
+  Preference,
+  Team,
+  Ticket,
+} from "./types";
 import { ROUND_LABELS, PHASE_LABELS, previousPlayableRound } from "./types";
 import {
   SettledResultsPanel,
@@ -70,13 +81,20 @@ export function PlayerView({
   const state = data.state;
   const myTeam = data.teams.find((t) => t.username === username) ?? null;
   const myTickets = data.tickets.filter((t) => t.team_username === username);
-  // 내 시드 순위 계산 (seed 내림차순, 동률이면 같은 등수)
+  // 내 시드 순위 (seed 내림차순, 동률은 같은 등수).
+  // 디스플레이 화면과 동일하게, stock/matching 진입 시 박제된 display_seed 기준.
+  const useSnapshot =
+    state?.current_phase === "stock" || state?.current_phase === "matching";
+  const seedForRank = (t: typeof data.teams[number]) =>
+    useSnapshot && t.display_seed !== null && t.display_seed !== undefined
+      ? t.display_seed
+      : t.seed;
   const sortedSeeds = [...data.teams]
-    .map((t) => t.seed)
+    .map(seedForRank)
     .sort((a, b) => b - a);
   const myRank =
     myTeam !== null
-      ? sortedSeeds.findIndex((s) => s <= myTeam.seed) + 1
+      ? sortedSeeds.findIndex((s) => s <= seedForRank(myTeam)) + 1
       : null;
   const myCurrentInvestments = state
     ? data.investments.filter(
@@ -149,9 +167,33 @@ export function PlayerView({
         />
       )}
 
+      {state?.current_round === "final" &&
+        state?.current_phase === "preference" && myTeam && (
+          <PreferenceSection
+            companies={data.companies}
+            preferences={data.preferences.filter(
+              (p) => p.team_username === username,
+            )}
+            run={run}
+          />
+        )}
+
+      {(state?.current_round === "final" &&
+        state?.current_phase === "final-result") ||
+      state?.current_round === "ended" ? (
+        <FinalMatchPanel
+          companies={data.companies}
+          teams={data.teams}
+          finalMatches={data.finalMatches}
+          myUsername={username}
+        />
+      ) : null}
+
       {state &&
         state.current_phase !== "stock" &&
-        state.current_phase !== "matching" && (
+        state.current_phase !== "matching" &&
+        state.current_phase !== "preference" &&
+        state.current_phase !== "final-result" && (
           <PassivePhasePanel phase={PHASE_LABELS[state.current_phase]} />
         )}
 
@@ -170,6 +212,7 @@ export function PlayerView({
         tickets={data.tickets}
         matchingResults={data.matchingResults}
         deltaRound={matchingResultRound}
+        myUsername={username}
       />
     </main>
   );
@@ -898,3 +941,190 @@ function MyMatchingResultsPanel({
     </section>
   );
 }
+
+
+// ============================================================
+// 최종 팀 매칭 · 지망 제출 섹션 (final/preference)
+// ============================================================
+
+function PreferenceSection({
+  companies,
+  preferences,
+  run,
+}: {
+  companies: Company[];
+  preferences: Preference[];
+  run: (fn: () => Promise<ActionResult | unknown>) => Promise<void>;
+}) {
+  // 회사 순서대로 표시. 각 회사에 대해 팀이 몇 지망을 걸었는지 선택.
+  const rankByCompany = new Map<number, number>();
+  for (const p of preferences) rankByCompany.set(p.company_id, p.rank);
+  const maxRank = companies.length;
+
+  return (
+    <section className="surface-panel panel-pad mb-6">
+      <div className="mb-3">
+        <p className="eyebrow">Final Matching</p>
+        <h2 className="text-xl font-black">최종 팀 매칭 · 지망 제출</h2>
+        <p className="muted-label mt-1">
+          각 회사에 <strong>1지망 ~ {maxRank}지망</strong> 중 하나를 선택하세요.
+          같은 지망 번호는 한 회사에만 걸 수 있습니다.
+          제출 완료 후 admin 이 매칭 실행 → 지망 순서 &gt; 매칭권 개수 &gt; 시드 순서로 배정됩니다.
+        </p>
+      </div>
+      <table className="table-modern">
+        <thead>
+          <tr>
+            <th>회사</th>
+            <th>지망</th>
+          </tr>
+        </thead>
+        <tbody>
+          {companies.map((c) => {
+            const currentRank = rankByCompany.get(c.id);
+            return (
+              <tr key={c.id}>
+                <td className="font-semibold">{c.name}</td>
+                <td>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <select
+                      value={currentRank ?? ""}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        if (val === "") {
+                          run(() => playerClearPreference(c.id));
+                        } else {
+                          run(() => playerSetPreference(c.id, Number(val)));
+                        }
+                      }}
+                      className="border border-gray-300 px-2 py-1 rounded"
+                    >
+                      <option value="">선택 안 함</option>
+                      {Array.from({ length: maxRank }, (_, i) => i + 1).map((r) => (
+                        <option key={r} value={r}>
+                          {r}지망
+                        </option>
+                      ))}
+                    </select>
+                    {currentRank !== undefined && (
+                      <span className="phase-pill">현재 {currentRank}지망</span>
+                    )}
+                  </div>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </section>
+  );
+}
+
+// ============================================================
+// 최종 팀 매칭 결과 패널 (final/final-result 이후)
+// ============================================================
+
+function FinalMatchPanel({
+  companies,
+  teams,
+  finalMatches,
+  myUsername,
+}: {
+  companies: Company[];
+  teams: Team[];
+  finalMatches: FinalMatch[];
+  myUsername: string;
+}) {
+  const myMatch = finalMatches.find((m) => m.team_username === myUsername);
+  const myCompany = myMatch
+    ? companies.find((c) => c.id === myMatch.company_id)
+    : null;
+
+  const byCompany = new Map<number, FinalMatch[]>();
+  for (const m of finalMatches) {
+    const list = byCompany.get(m.company_id) ?? [];
+    list.push(m);
+    byCompany.set(m.company_id, list);
+  }
+
+  const matchedUsernames = new Set(finalMatches.map((m) => m.team_username));
+  const unmatched = teams
+    .map((t) => t.username)
+    .filter((u) => !matchedUsernames.has(u));
+
+  return (
+    <section className="surface-panel panel-pad mb-6">
+      <div className="mb-3">
+        <p className="eyebrow">Final Matching</p>
+        <h2 className="text-xl font-black">최종 팀 매칭 결과</h2>
+      </div>
+
+      {myCompany ? (
+        <div className="mb-4 rounded-lg border-2 border-[#f6c73f] bg-[#fff8d6] p-4">
+          <p className="muted-label">우리 팀 배정</p>
+          <p className="text-2xl font-black">
+            ★ {myCompany.name}{" "}
+            <span className="text-base font-semibold text-[#7a4b00]">
+              ({myMatch?.matched_rank}지망 배정)
+            </span>
+          </p>
+        </div>
+      ) : (
+        <div className="mb-4 rounded-lg border border-[#fca5a5] bg-[#fee2e2] p-4">
+          <p className="text-sm font-semibold text-[#991b1b]">
+            우리 팀은 배정된 회사가 없습니다.
+          </p>
+        </div>
+      )}
+
+      <div className="grid gap-3 sm:grid-cols-2">
+        {companies.map((c) => {
+          const list = (byCompany.get(c.id) ?? []).slice().sort(
+            (a, b) => a.matched_rank - b.matched_rank,
+          );
+          return (
+            <div
+              key={c.id}
+              className="rounded-lg border border-[#dfe4dc] bg-white p-3"
+            >
+              <div className="mb-2 flex items-baseline justify-between">
+                <div className="font-black">{c.name}</div>
+                <div className="muted-label">
+                  {list.length}/{c.max_slots}팀
+                </div>
+              </div>
+              {list.length === 0 ? (
+                <p className="muted-label">배정된 팀 없음</p>
+              ) : (
+                <ul className="space-y-1 text-sm">
+                  {list.map((m) => (
+                    <li
+                      key={m.team_username}
+                      className={
+                        m.team_username === myUsername
+                          ? "font-black text-[#7a4b00]"
+                          : "font-mono"
+                      }
+                    >
+                      {m.team_username === myUsername && "★ "}
+                      {m.team_username}{" "}
+                      <span className="muted-label">({m.matched_rank}지망)</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {unmatched.length > 0 && (
+        <div className="mt-4 border-t border-[#dfe4dc] pt-3">
+          <p className="muted-label mb-1">미배정 팀</p>
+          <p className="text-sm">{unmatched.join(", ")}</p>
+        </div>
+      )}
+    </section>
+  );
+}
+

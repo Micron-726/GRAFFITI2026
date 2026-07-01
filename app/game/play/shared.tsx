@@ -364,12 +364,15 @@ export function TicketHoldingsTable({
   tickets,
   matchingResults = [],
   deltaRound = null,
+  myUsername = null,
 }: {
   companies: Company[];
   teams: Team[];
   tickets: Ticket[];
   matchingResults?: MatchingResult[];
   deltaRound?: Round | null;
+  /** 지정하면 해당 팀 행을 강조 표시 */
+  myUsername?: string | null;
 }) {
   if (teams.length === 0 || companies.length === 0) return null;
 
@@ -425,28 +428,46 @@ export function TicketHoldingsTable({
             </tr>
           </thead>
           <tbody>
-            {teams.map((t) => (
-              <tr key={t.username}>
-                <td className="font-mono font-semibold">{t.username}</td>
-                {companies.map((c) => {
-                  const count = get(t.username, c.id);
-                  const delta = getDelta(t.username, c.id);
-                  return (
-                    <td
-                      key={c.id}
-                      className="text-right font-semibold tabular-nums"
-                    >
-                      <span>{count}</span>
-                      {delta > 0 && (
-                        <span className="ml-1 font-black text-[#166534]">
-                          (+{delta})
-                        </span>
-                      )}
-                    </td>
-                  );
-                })}
-              </tr>
-            ))}
+            {teams.map((t) => {
+              const isMe = myUsername !== null && t.username === myUsername;
+              return (
+                <tr
+                  key={t.username}
+                  className={
+                    isMe
+                      ? "bg-[#fff8d6] outline outline-2 outline-[#f6c73f]"
+                      : ""
+                  }
+                >
+                  <td
+                    className={
+                      "font-mono font-semibold " +
+                      (isMe ? "text-[#7a4b00]" : "")
+                    }
+                  >
+                    {isMe && <span className="mr-1">★</span>}
+                    {t.username}
+                  </td>
+                  {companies.map((c) => {
+                    const count = get(t.username, c.id);
+                    const delta = getDelta(t.username, c.id);
+                    return (
+                      <td
+                        key={c.id}
+                        className="text-right font-semibold tabular-nums"
+                      >
+                        <span>{count}</span>
+                        {delta > 0 && (
+                          <span className="ml-1 font-black text-[#166534]">
+                            (+{delta})
+                          </span>
+                        )}
+                      </td>
+                    );
+                  })}
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -461,12 +482,15 @@ export function AllTeamsSeedTable({
   topN,
   profitByTeam,
   scroll = false,
+  myUsername = null,
 }: {
   teams: Team[];
   /** 상위 N팀만 표시. 생략하면 전체. */
   topN?: number;
   profitByTeam?: Map<string, number>;
   scroll?: boolean;
+  /** 지정하면 해당 팀 행을 강조 표시 (topN 로 잘려도 강조 팀은 별도 추가) */
+  myUsername?: string | null;
 }) {
   const sectionClassName =
     "surface-panel panel-pad " +
@@ -547,23 +571,41 @@ export function AllTeamsSeedTable({
             </tr>
           </thead>
           <tbody>
-            {displayed.map((t, idx) => (
-              <tr key={t.username}>
-                <td className="font-black tabular-nums">{idx + 1}</td>
-                <td className="font-mono font-semibold">{t.username}</td>
-                {showProfit && (
+            {displayed.map((t, idx) => {
+              const isMe = myUsername !== null && t.username === myUsername;
+              return (
+                <tr
+                  key={t.username}
+                  className={
+                    isMe
+                      ? "bg-[#fff8d6] outline outline-2 outline-[#f6c73f]"
+                      : ""
+                  }
+                >
+                  <td className="font-black tabular-nums">{idx + 1}</td>
                   <td
                     className={
-                      "text-right font-black tabular-nums " +
-                      moneyDeltaClass(profitByTeam?.get(t.username) ?? 0)
+                      "font-mono font-semibold " +
+                      (isMe ? "text-[#7a4b00]" : "")
                     }
                   >
-                    {formatSignedManwon(profitByTeam?.get(t.username) ?? 0)}
+                    {isMe && <span className="mr-1">★</span>}
+                    {t.username}
                   </td>
-                )}
-                <td className="text-right font-black">{formatManwon(t.seed)}</td>
-              </tr>
-            ))}
+                  {showProfit && (
+                    <td
+                      className={
+                        "text-right font-black tabular-nums " +
+                        moneyDeltaClass(profitByTeam?.get(t.username) ?? 0)
+                      }
+                    >
+                      {formatSignedManwon(profitByTeam?.get(t.username) ?? 0)}
+                    </td>
+                  )}
+                  <td className="text-right font-black">{formatManwon(t.seed)}</td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>

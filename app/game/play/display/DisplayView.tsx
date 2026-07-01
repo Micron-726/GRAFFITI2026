@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { useRouter } from "next/navigation";
-import type { GameData, Team } from "../types";
+import type { Company, FinalMatch, GameData, Team } from "../types";
 import { ROUND_LABELS, PHASE_LABELS, previousPlayableRound } from "../types";
 import { formatManwon } from "../format";
 import {
@@ -122,6 +122,17 @@ export function DisplayView({ data }: { data: GameData }) {
         </div>
       </div>
 
+      {/* 최종 팀 매칭 결과 (final-result / ended) */}
+      {(state?.current_round === "final" &&
+        state?.current_phase === "final-result") ||
+      state?.current_round === "ended" ? (
+        <FinalMatchDisplayPanel
+          companies={data.companies}
+          teams={data.teams}
+          finalMatches={data.finalMatches}
+        />
+      ) : null}
+
       {/* 매칭권 보유 현황은 평소엔 자주 안 보지만, 필요할 때 큰 화면에서 한눈에 보려고 맨 아래 가로 풀폭으로 둠. */}
       <TicketHoldingsTable
         companies={data.companies}
@@ -131,6 +142,80 @@ export function DisplayView({ data }: { data: GameData }) {
         deltaRound={matchingResultRound}
       />
     </main>
+  );
+}
+
+// 최종 팀 매칭 결과 — 큰 화면용 가로 그리드
+function FinalMatchDisplayPanel({
+  companies,
+  teams,
+  finalMatches,
+}: {
+  companies: Company[];
+  teams: Team[];
+  finalMatches: FinalMatch[];
+}) {
+  const byCompany = new Map<number, FinalMatch[]>();
+  for (const m of finalMatches) {
+    const list = byCompany.get(m.company_id) ?? [];
+    list.push(m);
+    byCompany.set(m.company_id, list);
+  }
+  const matched = new Set(finalMatches.map((m) => m.team_username));
+  const unmatched = teams.map((t) => t.username).filter((u) => !matched.has(u));
+
+  return (
+    <section className="surface-panel panel-pad mb-6">
+      <div className="mb-4 flex items-end justify-between">
+        <div>
+          <p className="eyebrow">Final Result</p>
+          <h2 className="text-2xl font-black">🎨 최종 팀 매칭 결과</h2>
+        </div>
+        <div className="muted-label">
+          매칭 완료 {finalMatches.length}팀 · 미배정 {unmatched.length}팀
+        </div>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        {companies.map((c) => {
+          const list = (byCompany.get(c.id) ?? []).sort(
+            (a, b) => a.matched_rank - b.matched_rank,
+          );
+          return (
+            <div
+              key={c.id}
+              className="rounded-lg border-2 border-[#dfe4dc] bg-white p-4"
+            >
+              <div className="mb-2 flex items-baseline justify-between border-b border-[#dfe4dc] pb-2">
+                <div className="text-xl font-black">{c.name}</div>
+                <div className="muted-label">
+                  {list.length}/{c.max_slots}팀
+                </div>
+              </div>
+              {list.length === 0 ? (
+                <p className="text-sm text-[#8a9488]">배정 없음</p>
+              ) : (
+                <ul className="space-y-1">
+                  {list.map((m) => (
+                    <li key={m.team_username} className="text-base font-mono">
+                      <span className="font-semibold">{m.team_username}</span>{" "}
+                      <span className="text-xs text-[#667065]">
+                        · {m.matched_rank}지망
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      {unmatched.length > 0 && (
+        <div className="mt-4 rounded border border-dashed border-[#cfd7cc] bg-[#fbfcfa] p-3">
+          <div className="muted-label mb-1">미배정 팀</div>
+          <div className="text-sm font-mono">{unmatched.join(", ")}</div>
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -145,38 +230,22 @@ function DisplayMetric({ label, value }: { label: string; value: string }) {
   );
 }
 
+// stock / matching 단계 진입 시 서버에서 teams.display_seed 로 박제된 값을 사용.
+// 다른 단계(idle / results) 는 실시간 seed 그대로.
+// 스냅샷이 아직 없는 회사(예: 마이그레이션 직후) 는 실시간 seed 로 자연스럽게 fallback.
 function getDisplaySeedTeams(data: GameData): Team[] {
   const state = data.state;
   if (!state) return data.teams;
 
-  if (state.current_phase === "stock") {
-    const spentByTeam = new Map<string, number>();
-    for (const investment of data.investments) {
-      if (investment.round !== state.current_round) continue;
-      spentByTeam.set(
-        investment.team_username,
-        (spentByTeam.get(investment.team_username) ?? 0) + investment.amount,
-      );
-    }
-    return data.teams.map((team) => ({
-      ...team,
-      seed: team.seed + (spentByTeam.get(team.username) ?? 0),
-    }));
-  }
+  const useSnapshot =
+    state.current_phase === "stock" || state.current_phase === "matching";
+  if (!useSnapshot) return data.teams;
 
-  if (state.current_phase === "matching") {
-    const activeBidByTeam = new Map<string, number>();
-    for (const bid of data.bids) {
-      activeBidByTeam.set(
-        bid.team_username,
-        (activeBidByTeam.get(bid.team_username) ?? 0) + bid.price * bid.count,
-      );
-    }
-    return data.teams.map((team) => ({
-      ...team,
-      seed: team.seed + (activeBidByTeam.get(team.username) ?? 0),
-    }));
-  }
-
-  return data.teams;
+  return data.teams.map((team) => ({
+    ...team,
+    seed:
+      team.display_seed !== null && team.display_seed !== undefined
+        ? team.display_seed
+        : team.seed,
+  }));
 }

@@ -80,7 +80,7 @@
 | `DATABASE_URL` | Neon Postgres 연결 문자열 |
 | `NEXT_PUBLIC_NOTION_URL` | (선택) Notion 메뉴 URL |
 
-현재 계정: `admin/1234`, `test/test`, `test2/test2` (자세한 내용은 [accounts.md](accounts.md)).
+현재 계정: `AdminIcists@icists.ac.kr` (관리자), `team1@icists.ac.kr` ~ `team20@icists.ac.kr` (참가자 20팀). 각 계정 비번은 랜덤 15자 (자세한 내용은 [accounts.md](accounts.md)).
 
 ## DB 스키마 (`npm run db:init`)
 
@@ -88,11 +88,14 @@
 |---|---|---|
 | `game_state` | id PK(=1), current_round, current_phase, **team_count**, **avg_initial_seed**, **matching_top_n** | 싱글톤. team_count/avg_initial_seed 는 수익률 공식에 사용, matching_top_n 은 매칭권 자동 정산 시 회사별 가격→개수→낮은 seed 순 상위 N 팀만 확정. 모두 admin UI 에서 수정 가능 |
 | `companies` | id SERIAL PK, name UNIQUE, min_order_price, **sort_order**, created_at | sort_order 로 드래그 순서 관리. UI 에선 ID 대신 "순번" (sort_order+1) 표시 |
-| `teams` | username PK, seed (CHECK >= 0) | seed 는 won 단위, 만원 배수 (앱이 강제) |
+| `teams` | username PK, seed (CHECK >= 0), **display_seed** | seed 는 won 단위, 만원 배수 (앱이 강제). display_seed 는 stock/matching 단계 동안 디스플레이 화면에 박제되는 값 (NULL 이면 실시간 seed 사용) |
 | `tickets` | (team, company) PK, count | |
 | `investments` | (round, team, company) PK, amount | 정산 후에도 보존 (history) |
 | `round_results` | (round, company) PK, yield_pct | 정산 결과 |
 | `bids` | (team, company) PK, price, count | 한 팀 한 회사 = 한 가격. 정산·취소 시 삭제 |
+| `preferences` | (team, company) PK, rank (UNIQUE (team, rank)) | 최종 팀 매칭용. 같은 팀은 같은 회사에 하나의 순위, 같은 순위를 두 회사에 쓸 수 X |
+| `final_matches` | team PK, company_id, matched_rank | 팀 하나당 회사 하나. 미매칭 팀은 행 없음 |
+| `companies` 의 **max_slots** | 최종 팀 매칭 슬롯 상한 | admin UI 에서 회사별로 설정 |
 | `matching_results` | (round, team, company) PK, bid_price, bid_count, awarded_count, min_order_price | 매칭권 정산 결과 스냅샷. 대기 단계에서 `성공 / 입찰` 및 보유 현황 `(+n)` 표시 |
 | `ticket_sales` | (round, team, company) PK, count, refund_amount, min_order_price | 매칭권 단계 자발 판매 환급 기록. 대기 단계 My Results 에 표시 |
 
@@ -100,32 +103,75 @@
 
 ```
 (seed, idle) → stock → results → matching →
-(series-a, idle) → ... → (series-c, matching) → (ended, idle)
+(series-a, idle) → ... → (series-c, matching) →
+(final, preference) → (final, final-result) → (ended, idle)
 ```
 
 [lib/game.ts](lib/game.ts) `computeNextState`. admin 의 **"다음 단계로 넘어가기"** 버튼(맨 아래 오른쪽).
 - **stock → results** 전이 시 `settleStockRound` 자동 수익률 정산
-- **matching → next round** 전이 시 `autoResolveMatchingPhase(round, matching_top_n)` 자동 매칭권 정산 (회사별 가격→개수→낮은 seed 순 상위 N 팀 확정, 그래도 같으면 랜덤, 나머지 50% 환불, 승자 최저가를 다음 최소 주문 금액으로 반영)
+- **matching → next round** 전이 시 `autoResolveMatchingPhase(round, matching_top_n, nextRoundFloor)` 자동 매칭권 정산 (회사별 높은 가격 → 많은 개수 → 낮은 seed 순 상위 N 팀 확정, 그래도 같으면 랜덤, 나머지 80% 환불, `min_order_price = max(floor, 승자 최저가)`)
+- **series-c matching → final preference** 전이 (참가자 지망 제출 단계 진입)
+- **final preference → final-result** 전이 시 `computeFinalMatching()` 자동 실행 (지망 순위 > 매칭권 개수 DESC > seed ASC > random 순으로 배정)
+- **final-result → ended idle** 전이 시 게임 종료
 
-> 게임 상태 섹션의 라운드/페이즈 직접 변경 박스는 escape hatch — 두 자동 정산 모두 skip.
+> 게임 상태 섹션의 라운드/페이즈 직접 변경 박스는 escape hatch — 자동 정산·매칭 모두 skip.
 
-## 수익률 공식 (비대칭 σ)
+## 최종 팀 매칭
+
+Series C 매칭 종료 후 진입.
+- **참가자**: (final, preference) 단계에서 각 회사에 1~N 지망 순위 제출 ([playerSetPreference](app/actions/player.ts))
+- **admin**: 회사별 `max_slots` (몇 팀까지 배정 가능한지) 설정 필요 → CompaniesSection 의 "최종 매칭 슬롯" 컬럼
+- **알고리즘** ([lib/game.ts](lib/game.ts) `computeFinalMatching`):
+  ```
+  for rank in 1..N:
+    unmatched 팀들의 rank 지망 후보 → 회사별로 그룹핑
+    회사별 남은 슬롯만큼 [tickets DESC, seed ASC, RANDOM()] 순으로 배정
+  ```
+- **핵심**: 지망 순위가 매칭권/시드보다 강한 우선순위.
+  예: A팀 1지망 X (매칭권 0장), B팀 2지망 X (매칭권 30장) → A팀 우선 배정.
+- **Idempotent**: `final_matches` 에 결과 있으면 skip.
+
+## 수익률 공식 (양수 baseline + 비대칭 σ)
 
 ```
 R(M, Z) = mean(M) + σ(M, Z) · Z,   Z ~ N(0,1) ∩ [-1, 1]
 
-mean(M)   = μ_max − 2·μ_max / (1 + k·M)
-σ_up(M)   = σ_up_base   + σ_up_bonus   / (1 + k·M)     (Z ≥ 0)
-σ_down(M) = σ_down_base + σ_down_growth · k·M/(1+k·M)  (Z < 0)
+mean(M)   = mean_min + (mean_max − mean_min) · k·M/(1+k·M)        ← 모든 M 에서 양수
+σ_up(M)   = sigma_up                                              (상수, Z ≥ 0)
+σ_down(M) = sigma_down_max − (sigma_down_max − sigma_down_min) · k·M/(1+k·M)  (Z < 0)
 
 k = k_scale / (team_count × avg_initial_seed)    ← DB game_state 에서 읽음
 ```
 
-- 파라미터: [config/yield.ts](config/yield.ts) (`u_max=5, σ_up_base=10, σ_up_bonus=17, σ_down_base=15, σ_down_growth=3, k_scale=10`)
+- 파라미터: [config/yield.ts](config/yield.ts) (`mean_min=10, mean_max=30, sigma_up=70, sigma_down_max=40, sigma_down_min=30, k_scale=10`)
 - team_count, avg_initial_seed 는 DB 에서 읽음 (admin UI 게임 설정 섹션에서 수정 가능). ★ 테스트 때 작은 값으로 바꿔야 공식이 의도대로 동작 (예: test 계정 2개로 1000만원 seed 면 team_count=2, avg_initial_seed=10000000).
-- `|2·u_max − σ_up_bonus|` = `|2·u_max − σ_down_growth|` = 7 → M 변화에 따른 저점·고점 변화량이 ≈ 균형 (각 ~5.7%). σ_up_bonus 를 σ_down_growth 보다 크게 두는 건 같지만, 그 차이가 너무 크면 고점 변동만 가팔라져 밸런스 깨짐.
-- 20팀·평균 1000만원 기준 분포 (M=풀의 %): 1% → 평균 −1.8% / 저점 −19% / 고점 +21%. 10% → +0.5% / −17% / +19%. 100% → +2.7% / −14% / +16%.
+- M=0 극단 (저 M): 평균 +10%, 범위 [-30%, +80%]
+- M=∞ 극단 (고 M): 평균 +30%, 범위 [0%, +100%]
+- 예시 (20팀·평균 1000만원): M=10% (2000만원) → 평균 ~15% / 저점 ~−20% / 고점 ~+85%. M=50% → 평균 ~23% / 저점 ~−10% / 고점 ~+93%.
+- 모든 M 에서 평균 양수 → 한 라운드만 잘못 베팅해도 게임이 안 끝나는 디자인. 이전 공식이 너무 마이너스 잦아서 전면 재설계.
 - 구현: [lib/game.ts](lib/game.ts) `computeYieldPct(M, teamCount, avgInitialSeed)`. `settleStockRound` 가 game_state 에서 두 값을 읽고 회사별 SUM 후 호출 → 만원 단위 내림 적용.
+
+## 라운드별 매칭권 최소 주문 금액 하한
+
+[lib/game.ts](lib/game.ts) `ROUND_PRICE_FLOORS` (원 단위):
+- seed: 100만원
+- series-a: 150만원
+- series-b: 200만원
+- series-c: 300만원
+
+매칭권 자동정산 종료 시 다음 라운드 진입 → 회사 `min_order_price = max(다음 라운드 floor, 승자 중 최저가)`.
+승자 없는 회사는 `min_order_price = max(현 값, 다음 라운드 floor)`.
+`opResetGame` 도 `min_order_price = max(initial_min_order_price, seed_floor)` 로 복구.
+
+## 매칭권 자동정산 우선순위
+
+`autoResolveMatchingPhase(round, topN, nextRoundFloor)` 의 SQL 정렬:
+1. `price DESC` — 높은 가격 우선
+2. `count DESC` — 같은 가격이면 많이 산 팀 우선
+3. `seed ASC` — 같은 개수면 시드 적은 팀 우선
+4. `RANDOM()` — 모두 동률이면 무작위
+
+패자 환불: 가격×개수 × 0.8 (만원 단위 내림). ★ 자발적 판매(`opSellTickets`) 도 80% 인 것과 의도적으로 통일.
 
 ## 인증·권한
 

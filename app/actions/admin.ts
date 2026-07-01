@@ -16,6 +16,10 @@ import {
   opRefundFailedBid,
   autoResolveMatchingPhase,
   opResetGame,
+  freezeTeamSnapshot,
+  clearTeamSnapshot,
+  ROUND_PRICE_FLOORS,
+  computeFinalMatching,
 } from "@/lib/game";
 
 const ROUNDS = ["seed", "series-a", "series-b", "series-c", "ended"] as const;
@@ -97,7 +101,8 @@ export async function resetGame(): Promise<ActionResult> {
 
 // "다음 단계로 넘어가기": idle→stock→results→matching→(다음 라운드)
 // stock → results: 자동 수익률 정산
-// matching → next: 자동 매칭권 정산 (상위 topN 확정, 나머지 50% 환불)
+// matching → next: 자동 매칭권 정산 (상위 topN 확정, 나머지 80% 환불) + 다음 라운드 floor 적용
+// stock/matching 진입 시 seed 스냅샷 freeze, idle/results 진입 시 clear.
 export async function advanceToNextPhase(): Promise<ActionResult> {
   return guard(async () => {
     const { current_round, current_phase, matching_top_n } =
@@ -106,7 +111,13 @@ export async function advanceToNextPhase(): Promise<ActionResult> {
       await settleStockRound(current_round);
     }
     if (current_phase === "matching") {
-      await autoResolveMatchingPhase(current_round, matching_top_n);
+      const next = computeNextState(current_round, current_phase);
+      const floor = ROUND_PRICE_FLOORS[next.round] ?? 0;
+      await autoResolveMatchingPhase(current_round, matching_top_n, floor);
+    }
+    // 최종 팀 매칭: preference → final-result 전환 시 자동 매칭 실행
+    if (current_round === "final" && current_phase === "preference") {
+      await computeFinalMatching();
     }
     const next = computeNextState(current_round, current_phase);
     await sql`
@@ -114,6 +125,12 @@ export async function advanceToNextPhase(): Promise<ActionResult> {
       SET current_round = ${next.round}, current_phase = ${next.phase}
       WHERE id = 1
     `;
+    // 다음 단계에 따라 스냅샷 처리
+    if (next.phase === "stock" || next.phase === "matching") {
+      await freezeTeamSnapshot();
+    } else {
+      await clearTeamSnapshot();
+    }
     refresh();
   });
 }
@@ -174,6 +191,19 @@ export async function updateCompany(
     // admin 이 직접 수정한 값은 자동정산 기준이 아니라 새로운 "초기값" 으로 간주.
     // → initial_min_order_price 도 같이 업데이트 → 다음 게임 초기화 때 이 값으로 복구.
     await sql`UPDATE companies SET name = ${n}, min_order_price = ${p}, initial_min_order_price = ${p} WHERE id = ${i}`;
+    refresh();
+  });
+}
+
+// 최종 팀 매칭 단계에서 이 회사에 배정될 수 있는 팀 수 상한.
+export async function setCompanyMaxSlots(
+  id: number,
+  maxSlots: number,
+): Promise<ActionResult> {
+  return guard(async () => {
+    const i = assertInt(id, "id");
+    const s = assertInt(maxSlots, "maxSlots", { min: 0 });
+    await sql`UPDATE companies SET max_slots = ${s} WHERE id = ${i}`;
     refresh();
   });
 }

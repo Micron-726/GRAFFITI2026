@@ -138,25 +138,27 @@ function HintContent() {
       </div>
 
       <p className="mt-6">
-        평균과 변동성은 <InlineMath latex="M" /> 에 따라 달라집니다 — 평균은{" "}
-        <InlineMath latex="M" /> 이 클수록 <InlineMath latex={String.raw`+\mu_{\max}`} /> 에
-        가까워지고, 작을수록 <InlineMath latex={String.raw`-\mu_{\max}`} /> 에 가까워집니다.
-        변동성은 <InlineMath latex="Z" /> 의 부호에 따라 두 가지로 나뉘는데, 수익
-        방향(<InlineMath latex={String.raw`Z \ge 0`} />) 의{" "}
-        <InlineMath latex={String.raw`\sigma_{\mathrm{up}}`} /> 은 <InlineMath latex="M" /> 이
-        작을수록 커지고, 손실 방향(<InlineMath latex={String.raw`Z < 0`} />) 의{" "}
-        <InlineMath latex={String.raw`\sigma_{\mathrm{down}}`} /> 은 <InlineMath latex="M" /> 이
-        클수록 커지면서 평균 상승을 일부 상쇄합니다.
+        평균은 <strong>모든 <InlineMath latex="M" /> 에서 양수</strong>입니다.
+        <InlineMath latex="M" /> 이 작으면 약 <InlineMath latex="+10\%" />,
+        많이 모일수록 최대 <InlineMath latex="+30\%" /> 까지 상승해요.
+        상방(<InlineMath latex={String.raw`Z \ge 0`} />) 의{" "}
+        <InlineMath latex={String.raw`\sigma_{\mathrm{up}}`} /> 은
+        모든 <InlineMath latex="M" /> 에서 큰 상수(약 70%p) — 어떤 회사든 최고점이
+        평균에서 상당히 멀리 갈 수 있어요. 하방(<InlineMath latex={String.raw`Z < 0`} />) 의{" "}
+        <InlineMath latex={String.raw`\sigma_{\mathrm{down}}`} /> 은{" "}
+        <InlineMath latex="M" /> 이 커질수록 작아져서(40→30)
+        <strong> 인기 회사는 손실 폭이 줄어듭니다</strong>.
       </p>
 
       <div className="mt-6">
         <p>즉,</p>
-        <p>• 많은 팀이 모이는 회사 → 평균 수익률 ↑, 수익 쪽 변동성 ↓ (안정적인 작은 수익)</p>
-        <p>• 적은 팀만 모이는 회사 → 평균 수익률 ↓, 수익 쪽 변동성 ↑ (대박 가능, 단 큰 손실 위험도!)</p>
+        <p>• 많은 팀이 모이는 회사 → 평균 <InlineMath latex="+30" />, 범위 약 <InlineMath latex="[0, +100]" /> (안전 + 큰 보상)</p>
+        <p>• 적은 팀만 모이는 회사 → 평균 <InlineMath latex="+10" />, 범위 약 <InlineMath latex="[-30, +80]" /> (변동성 큼)</p>
+        <p>• 어떤 회사든 평균은 양수 — 다만 운 나쁘면 마이너스도 가능</p>
       </div>
 
       <p className="mt-6">
-        인기 종목은 무난한 수익을, 비인기 종목은 큰 한 방을 노릴 수 있는 구조예요.
+        인기 종목은 안정적인 큰 수익을, 비인기 종목은 변동성 게임을 노릴 수 있는 구조예요.
         다른 팀들이 어디에 몰릴지 예측해 균형을 잡거나, 역으로 비인기 종목에
         과감히 베팅해보세요. 스타트업의 이야기에서 얻은 확신과, 다른 팀들의
         심리를 읽는 눈 — 이 둘을 함께 굴리는 것이 GRAFFITI 투자 게임의 진짜
@@ -164,9 +166,9 @@ function HintContent() {
       </p>
 
       <div className="mt-6 grid gap-3">
-        <DisplayMath latex={String.raw`\operatorname{mean}(M) = \mu_{\max} - \frac{2\mu_{\max}}{1 + kM}`} />
-        <DisplayMath latex={String.raw`\sigma_{\mathrm{up}}(M) = \sigma_{\mathrm{up\_base}} + \frac{\sigma_{\mathrm{up\_bonus}}}{1 + kM} \quad (Z \ge 0)`} />
-        <DisplayMath latex={String.raw`\sigma_{\mathrm{down}}(M) = \sigma_{\mathrm{down\_base}} + \sigma_{\mathrm{down\_growth}} \cdot \frac{kM}{1 + kM} \quad (Z < 0)`} />
+        <DisplayMath latex={String.raw`\operatorname{mean}(M) = \mu_{\mathrm{min}} + (\mu_{\mathrm{max}} - \mu_{\mathrm{min}}) \cdot \frac{kM}{1 + kM}`} />
+        <DisplayMath latex={String.raw`\sigma_{\mathrm{up}}(M) = \sigma_{\mathrm{up}} \quad (\text{상수},\ Z \ge 0)`} />
+        <DisplayMath latex={String.raw`\sigma_{\mathrm{down}}(M) = \sigma_{\mathrm{down\_max}} - (\sigma_{\mathrm{down\_max}} - \sigma_{\mathrm{down\_min}}) \cdot \frac{kM}{1 + kM} \quad (Z < 0)`} />
       </div>
     </div>
   );

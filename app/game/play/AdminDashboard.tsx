@@ -10,6 +10,7 @@ import {
   resetGame,
   addCompany,
   updateCompany,
+  setCompanyMaxSlots,
   deleteCompany,
   reorderCompanies,
   setTeamSeed,
@@ -27,10 +28,12 @@ import {
 import type {
   Bid,
   Company,
+  FinalMatch,
   GameData,
   GameState,
   Investment,
   Phase,
+  Preference,
   Round,
   Team,
   Ticket,
@@ -40,6 +43,7 @@ import {
   PHASE_LABELS,
   compareUsernames,
   describeNext,
+  previousPlayableRound,
 } from "./types";
 import { SettledResultsPanel, TicketHoldingsTable } from "./shared";
 import { formatManwon, manwonToWon, wonToManwon, MANWON } from "./format";
@@ -166,6 +170,17 @@ export function AdminDashboard({ data }: { data: GameData }) {
         />
       )}
 
+      {state.current_round === "final" && (
+        <FinalMatchingAdminSection
+          companies={data.companies}
+          teams={data.teams}
+          preferences={data.preferences}
+          finalMatches={data.finalMatches}
+          tickets={data.tickets}
+          currentPhase={state.current_phase}
+        />
+      )}
+
       <SettledResultsPanel
         companies={data.companies}
         teams={data.teams}
@@ -177,6 +192,12 @@ export function AdminDashboard({ data }: { data: GameData }) {
         companies={data.companies}
         teams={data.teams}
         tickets={data.tickets}
+        matchingResults={data.matchingResults}
+        deltaRound={
+          state.current_phase === "idle"
+            ? previousPlayableRound(state.current_round)
+            : null
+        }
       />
 
       <AdvanceButton state={state} run={run} />
@@ -192,7 +213,7 @@ function AdvanceButton({ state, run }: { state: GameState; run: RunFn }) {
   const ended = state.current_round === "ended";
   const matchingNote =
     state.current_phase === "matching"
-      ? `\n(매칭권 자동 정산: 회사별 가격→개수→낮은 seed 순 상위 ${state.matching_top_n}팀 확정, 나머지 50% 환불)`
+      ? `\n(매칭권 자동 정산: 회사별 높은 가격 → 많은 개수 → 낮은 seed 순 상위 ${state.matching_top_n}팀 확정, 나머지 80% 환불)`
       : "";
   return (
     <div className="mt-8 flex justify-end items-center gap-3">
@@ -324,7 +345,12 @@ function GameConfigSection({ state, run }: { state: GameState; run: RunFn }) {
       <p className="text-xs text-gray-600 mb-3">
         팀 수·평균 시드는 수익률 공식의 k 산정에 사용 (k = k_scale / (팀 수 ×
         평균 시드)). 매칭권 상위 N 은 매칭권 단계 종료 시 자동 정산에서 회사별
-        가격→개수→낮은 seed 순 상위 N 팀만 확정하고 나머지는 50% 환불.
+        <strong> 가격 ↓ → 개수 ↓ → 시드 ↑ → 랜덤</strong> 우선순위로 상위 N 팀
+        확정, 나머지는 80% 환불.
+      </p>
+      <p className="text-xs text-gray-600 mb-3">
+        &quot;가격 ↓, 개수 ↓&quot; = 높은 가격 · 많은 개수 우선. &quot;시드 ↑&quot; =
+        같은 가격·개수면 시드 적은 팀 우선.
       </p>
       <div className="flex items-center gap-2 flex-wrap">
         <label className="flex items-center gap-1 text-sm">
@@ -429,6 +455,7 @@ function CompaniesSection({
                 <th className="py-1 w-16">순번</th>
                 <th className="py-1">이름</th>
                 <th className="py-1 w-44">최소 주문 금액 (만원)</th>
+                <th className="py-1 w-28">최종 매칭 슬롯</th>
                 <th className="py-1 w-40">작업</th>
               </tr>
             </thead>
@@ -524,6 +551,7 @@ function CompanyRow({
   const [priceManwon, setPriceManwon] = useState(
     String(wonToManwon(company.min_order_price)),
   );
+  const [maxSlots, setMaxSlots] = useState(String(company.max_slots ?? 1));
 
   return (
     <tr
@@ -572,6 +600,25 @@ function CompanyRow({
             className="border border-gray-300 px-2 py-1 rounded w-32"
           />
           <span className="text-xs text-gray-500">만원</span>
+        </div>
+      </td>
+      <td className="py-1">
+        <div className="flex items-center gap-1">
+          <input
+            type="number"
+            value={maxSlots}
+            min={0}
+            onChange={(e) => setMaxSlots(e.target.value)}
+            onBlur={() => {
+              const n = Number(maxSlots);
+              if (!Number.isFinite(n) || n < 0) return;
+              if (n !== company.max_slots) {
+                run(() => setCompanyMaxSlots(company.id, n));
+              }
+            }}
+            className="border border-gray-300 px-2 py-1 rounded w-16"
+          />
+          <span className="text-xs text-gray-500">팀</span>
         </div>
       </td>
       <td className="py-1">
@@ -1223,7 +1270,7 @@ function BidResolutionList({
                             }
                             className="px-2 py-1 bg-yellow-200 rounded text-xs"
                           >
-                            50% 환불
+                            80% 환불
                           </button>
                         )}
                         {b.isRandomBoundary && (
@@ -1386,3 +1433,151 @@ function TicketSellForm({
     </div>
   );
 }
+
+
+// ============================================================
+// 최종 팀 매칭: 지망 현황 + 매칭 결과 (admin 전용)
+// ============================================================
+
+function FinalMatchingAdminSection({
+  companies,
+  teams,
+  preferences,
+  finalMatches,
+  tickets,
+  currentPhase,
+}: {
+  companies: Company[];
+  teams: Team[];
+  preferences: Preference[];
+  finalMatches: FinalMatch[];
+  tickets: Ticket[];
+  currentPhase: Phase;
+}) {
+  const ticketsByTeam = new Map<string, number>();
+  for (const t of tickets) {
+    ticketsByTeam.set(
+      t.team_username,
+      (ticketsByTeam.get(t.team_username) ?? 0) + t.count,
+    );
+  }
+  const prefByTeamCompany = new Map<string, number>();
+  for (const p of preferences) {
+    prefByTeamCompany.set(`${p.team_username}:${p.company_id}`, p.rank);
+  }
+  const submittedTeams = new Set(preferences.map((p) => p.team_username));
+
+  return (
+    <section className="mb-6 p-4 border border-gray-300 rounded">
+      <h2 className="text-lg font-bold mb-1">최종 팀 매칭 · Admin 뷰</h2>
+      <p className="text-xs text-gray-600 mb-3">
+        회사별 슬롯은 위 &quot;회사&quot; 섹션의 <strong>최종 매칭 슬롯</strong>{" "}
+        컬럼에서 설정. &quot;지망 제출&quot; 단계 종료 시 자동 매칭이 실행되고,
+        &quot;매칭 결과&quot; 단계에서는 아래 표로 배정 결과가 보임.
+      </p>
+
+      {currentPhase === "preference" && (
+        <div className="mb-4">
+          <h3 className="text-sm font-semibold mb-2">
+            지망 제출 현황 ({submittedTeams.size}/{teams.length}팀)
+          </h3>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-gray-200 text-left">
+                  <th className="py-1 px-2">팀</th>
+                  <th className="py-1 px-2">매칭권</th>
+                  <th className="py-1 px-2">시드</th>
+                  {companies.map((c) => (
+                    <th key={c.id} className="py-1 px-2 text-center">
+                      {c.name}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {teams.map((t) => (
+                  <tr key={t.username} className="border-b border-gray-100">
+                    <td className="py-1 px-2 font-mono">{t.username}</td>
+                    <td className="py-1 px-2">
+                      {ticketsByTeam.get(t.username) ?? 0}
+                    </td>
+                    <td className="py-1 px-2">{formatManwon(t.seed)}</td>
+                    {companies.map((c) => {
+                      const r = prefByTeamCompany.get(
+                        `${t.username}:${c.id}`,
+                      );
+                      return (
+                        <td
+                          key={c.id}
+                          className="py-1 px-2 text-center tabular-nums"
+                        >
+                          {r ? `${r}지망` : "-"}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {finalMatches.length > 0 && (
+        <div>
+          <h3 className="text-sm font-semibold mb-2">최종 매칭 결과</h3>
+          <div className="grid gap-3 sm:grid-cols-2">
+            {companies.map((c) => {
+              const list = finalMatches
+                .filter((m) => m.company_id === c.id)
+                .sort((a, b) => a.matched_rank - b.matched_rank);
+              return (
+                <div
+                  key={c.id}
+                  className="rounded border border-gray-200 p-3 bg-white"
+                >
+                  <div className="flex items-baseline justify-between mb-2">
+                    <div className="font-semibold">{c.name}</div>
+                    <div className="text-xs text-gray-500">
+                      {list.length}/{c.max_slots}팀
+                    </div>
+                  </div>
+                  {list.length === 0 ? (
+                    <p className="text-xs text-gray-500">배정된 팀 없음</p>
+                  ) : (
+                    <ul className="text-sm space-y-0.5">
+                      {list.map((m) => (
+                        <li key={m.team_username} className="font-mono">
+                          {m.team_username}{" "}
+                          <span className="text-xs text-gray-500">
+                            ({m.matched_rank}지망)
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+          {teams.filter((t) =>
+            !finalMatches.some((m) => m.team_username === t.username),
+          ).length > 0 && (
+            <div className="mt-3 text-xs">
+              <strong>미배정 팀:</strong>{" "}
+              {teams
+                .filter(
+                  (t) =>
+                    !finalMatches.some((m) => m.team_username === t.username),
+                )
+                .map((t) => t.username)
+                .join(", ")}
+            </div>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+

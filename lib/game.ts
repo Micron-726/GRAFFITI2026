@@ -9,6 +9,17 @@ export const ROUND_ORDER = [
   "series-c",
 ] as const;
 
+// 라운드별 매칭권 최소 주문 금액 하한 (원 단위, 만원 배수).
+// 매칭권 자동정산 종료 시 다음 라운드의 min_order_price 는
+//   max(다음 라운드 floor, 승자 중 최저가) 로 갱신됨.
+// 게임 초기화 시에도 seed floor 가 강제됨.
+export const ROUND_PRICE_FLOORS: Record<string, number> = {
+  seed: 1_000_000, // 100만원
+  "series-a": 1_500_000, // 150만원
+  "series-b": 2_000_000, // 200만원
+  "series-c": 3_000_000, // 300만원
+};
+
 // ===== 수익률 공식 (비대칭 σ) =====
 // R(M, Z) = mean(M) + σ(M, Z) · Z, Z ~ N(0,1) ∩ [-1, 1]
 // σ 는 Z 의 부호에 따라 다름 (config/yield.ts 주석 참조).
@@ -32,11 +43,11 @@ function computeYieldPct(
   avgInitialSeed: number,
 ): number {
   const {
-    u_max,
-    sigma_up_base,
-    sigma_up_bonus,
-    sigma_down_base,
-    sigma_down_growth,
+    mean_min,
+    mean_max,
+    sigma_up,
+    sigma_down_max,
+    sigma_down_min,
     k_scale,
   } = YIELD_CONFIG;
 
@@ -44,12 +55,15 @@ function computeYieldPct(
   const k = k_scale / totalMoney;
   const kM = k * (Number(M) || 0);
 
-  const factorUp = 1 / (1 + kM); // M=0 → 1, M=∞ → 0
   const factorDown = kM / (1 + kM); // M=0 → 0, M=∞ → 1
 
-  const mean = u_max - 2 * u_max * factorUp;
-  const sigmaUp = sigma_up_base + sigma_up_bonus * factorUp;
-  const sigmaDown = sigma_down_base + sigma_down_growth * factorDown;
+  // 평균: M 클수록 mean_max 로 수렴, 작을수록 mean_min. 모두 양수.
+  const mean = mean_min + (mean_max - mean_min) * factorDown;
+  // 상방 변동은 상수. 인기·비인기 무관하게 최고점 (mean + sigma_up) 이 매력적.
+  const sigmaUp = sigma_up;
+  // 하방 변동은 M 클수록 축소 → 인기 회사는 손실 폭이 작음.
+  const sigmaDown =
+    sigma_down_max - (sigma_down_max - sigma_down_min) * factorDown;
 
   const Z = sampleTruncatedNormal();
   const sigma = Z >= 0 ? sigmaUp : sigmaDown;
@@ -83,19 +97,27 @@ export async function readGameState(): Promise<GameStateRow> {
   };
 }
 
-// 다음 단계 계산: idle → stock → results → matching → (다음 라운드) idle ...
+// 다음 단계 계산:
+//   (seed, idle) → stock → results → matching → (series-a, idle) → ...
+//   (series-c, matching) → (final, preference) → (final, final-result) → (ended, idle)
 export function computeNextState(
   round: string,
   phase: string,
 ): { round: string; phase: string } {
   if (round === "ended") return { round, phase };
+  if (round === "final") {
+    if (phase === "preference") return { round: "final", phase: "final-result" };
+    if (phase === "final-result") return { round: "ended", phase: "idle" };
+    return { round: "final", phase: "preference" };
+  }
   if (phase === "idle") return { round, phase: "stock" };
   if (phase === "stock") return { round, phase: "results" };
   if (phase === "results") return { round, phase: "matching" };
   if (phase === "matching") {
     const idx = (ROUND_ORDER as readonly string[]).indexOf(round);
     if (idx < 0 || idx >= ROUND_ORDER.length - 1) {
-      return { round: "ended", phase: "idle" };
+      // series-c 매칭 종료 → 최종 팀 매칭 진입
+      return { round: "final", phase: "preference" };
     }
     return { round: ROUND_ORDER[idx + 1], phase: "idle" };
   }
@@ -305,7 +327,8 @@ export async function opAwardBid(
   await sql`DELETE FROM bids WHERE team_username = ${username} AND company_id = ${companyId}`;
 }
 
-// 패자 처리: 가격×개수 의 50% 환불 (만원 내림), 입찰 삭제.
+// 패자 처리: 가격×개수 의 80% 환불 (만원 내림), 입찰 삭제.
+// 매칭권 자발적 판매(opSellTickets) 도 80% 인 것과 통일.
 export async function opRefundFailedBid(
   round: string,
   username: string,
@@ -318,7 +341,7 @@ export async function opRefundFailedBid(
   if (!bidRows[0]) throw new Error("해당 입찰을 찾을 수 없습니다");
 
   const total = Number(bidRows[0].price) * Number(bidRows[0].count);
-  const refundAmt = Math.floor((total * 0.5) / 10000) * 10000;
+  const refundAmt = Math.floor((total * 0.8) / 10000) * 10000;
   await sql`UPDATE teams SET seed = seed + ${refundAmt} WHERE username = ${username}`;
   await recordMatchingResult(
     round,
@@ -373,11 +396,19 @@ async function recordMatchingResult(
   `;
 }
 
-// 매칭권 단계 자동 정산: 회사별로 가격 desc → 개수 desc → seed asc → random
-// 순서로 상위 topN 팀 확정, 나머지는 50% 환불.
+// 매칭권 단계 자동 정산.
+// 회사별 정렬 우선순위:
+//   1. price DESC          (높은 가격이 우선)
+//   2. count  DESC         (같은 가격이면 많이 산 팀이 우선)
+//   3. seed   ASC          (count 까지 같으면 시드 적은 팀이 우선)
+//   4. RANDOM()            (시드까지 같으면 무작위)
+// 상위 topN 팀은 매칭권 확정, 나머지는 80% 환불.
+// nextRoundFloor 가 양수면 갱신된 min_order_price 는 max(floor, 승자 중 최저가).
+// 승자가 없어도 next round 진입 시 floor 로 끌어올림.
 export async function autoResolveMatchingPhase(
   round: string,
   topN: number,
+  nextRoundFloor: number = 0,
 ): Promise<void> {
   if (!Number.isInteger(topN) || topN < 0) {
     throw new Error("매칭권 상위 N 값은 0 이상의 정수여야 합니다");
@@ -403,10 +434,20 @@ export async function autoResolveMatchingPhase(
       }
     }
 
-    // 승자가 있으면 다음 라운드의 min_order_price 를 승자 중 최저가로 갱신.
+    // 다음 라운드 min_order_price = max(floor, 승자 중 최저가).
+    // 승자가 없으면 기존 값과 floor 만 비교.
     if (winnerPrices.length > 0) {
-      const newMinPrice = Math.min(...winnerPrices);
+      const newMinPrice = Math.max(
+        nextRoundFloor,
+        Math.min(...winnerPrices),
+      );
       await sql`UPDATE companies SET min_order_price = ${newMinPrice} WHERE id = ${c.id}`;
+    } else if (nextRoundFloor > 0) {
+      await sql`
+        UPDATE companies
+        SET min_order_price = GREATEST(min_order_price, ${nextRoundFloor})
+        WHERE id = ${c.id}
+      `;
     }
   }
 }
@@ -422,10 +463,28 @@ export async function opResetGame(): Promise<void> {
   await sql`DELETE FROM round_results`;
   await sql`DELETE FROM investments`;
   await sql`DELETE FROM tickets`;
-  await sql`UPDATE teams SET seed = ${avg_initial_seed}`;
+  await sql`DELETE FROM preferences`;
+  await sql`DELETE FROM final_matches`;
+  await sql`UPDATE teams SET seed = ${avg_initial_seed}, display_seed = NULL`;
   // 매칭권 자동정산이 덮어쓴 min_order_price 를 admin 이 마지막에 설정한 초기값으로 복구.
-  await sql`UPDATE companies SET min_order_price = initial_min_order_price`;
+  // 동시에 seed 라운드의 floor 도 강제 (initial 이 floor 보다 낮으면 floor 로 끌어올림).
+  const seedFloor = ROUND_PRICE_FLOORS["seed"] ?? 0;
+  await sql`
+    UPDATE companies
+    SET min_order_price = GREATEST(initial_min_order_price, ${seedFloor})
+  `;
   await sql`UPDATE game_state SET current_round = 'seed', current_phase = 'idle' WHERE id = 1`;
+}
+
+// 디스플레이·순위 표시용 시드 스냅샷.
+// 주식/매칭권 단계 진입 시 seed 를 display_seed 에 박제 → 단계 진행 중 다른 팀의
+// 실시간 시드가 화면에 노출되지 않도록 함. 결과/대기 단계에서는 clear 해서 실시간 seed 사용.
+export async function freezeTeamSnapshot(): Promise<void> {
+  await sql`UPDATE teams SET display_seed = seed`;
+}
+
+export async function clearTeamSnapshot(): Promise<void> {
+  await sql`UPDATE teams SET display_seed = NULL`;
 }
 
 // 매칭권 자발적 판매: 현재 최소 주문 금액 × 개수 의 80% 환불 (만원 내림)
@@ -497,3 +556,108 @@ async function recordTicketSale(
       sold_at = NOW()
   `;
 }
+
+// ===== 최종 팀 매칭 (Series C 이후) =====
+// 각 참가자가 회사별 지망 순위를 제출 → advance 시 자동으로 회사에 배정.
+// 배정 알고리즘:
+//   for rank in 1..N:
+//     unmatched 팀들의 rank 지망 회사 별로 후보 그룹핑
+//     회사별 남은 슬롯만큼 [tickets DESC, seed ASC, RANDOM()] 순으로 배정
+// 지망 순위가 매칭권/시드보다 강한 우선순위 (예: 1지망 0장 팀 > 2지망 30장 팀).
+
+export async function opSetPreference(
+  username: string,
+  companyId: number,
+  rank: number,
+): Promise<void> {
+  if (!Number.isInteger(rank) || rank < 1) {
+    throw new Error("지망 순위는 1 이상의 정수여야 합니다");
+  }
+  const companyCount = (await sql`SELECT COUNT(*)::INT AS c FROM companies`) as { c: number }[];
+  const max = Number(companyCount[0]?.c ?? 0);
+  if (rank > max) {
+    throw new Error(`지망 순위는 ${max} 이하여야 합니다 (전체 회사 수)`);
+  }
+  // (team, company) unique + (team, rank) unique → 같은 팀이 같은 회사에 두 순위 X,
+  // 같은 팀이 같은 순위에 두 회사 X. 기존 (team, company) 는 rank 만 갱신,
+  // 다른 회사에 같은 rank 가 있으면 그것부터 지워야 함.
+  await sql`
+    DELETE FROM preferences
+    WHERE team_username = ${username} AND rank = ${rank} AND company_id <> ${companyId}
+  `;
+  await sql`
+    INSERT INTO preferences (team_username, company_id, rank)
+    VALUES (${username}, ${companyId}, ${rank})
+    ON CONFLICT (team_username, company_id) DO UPDATE SET rank = EXCLUDED.rank
+  `;
+}
+
+export async function opClearPreference(
+  username: string,
+  companyId: number,
+): Promise<void> {
+  await sql`
+    DELETE FROM preferences
+    WHERE team_username = ${username} AND company_id = ${companyId}
+  `;
+}
+
+// 최종 매칭 실행. 이미 결과가 있으면 skip (재진입 안전).
+export async function computeFinalMatching(): Promise<void> {
+  const already = (await sql`SELECT 1 FROM final_matches LIMIT 1`) as unknown[];
+  if (already.length > 0) return;
+
+  const companies = (await sql`
+    SELECT id, max_slots FROM companies
+  `) as { id: number; max_slots: number }[];
+  const remainingSlots = new Map<number, number>();
+  for (const c of companies) {
+    remainingSlots.set(Number(c.id), Number(c.max_slots));
+  }
+
+  const teams = (await sql`SELECT username FROM teams`) as { username: string }[];
+  const unmatched = new Set(teams.map((t) => t.username));
+
+  // 지망 순위 최댓값 (팀별로 서로 다를 수 있으니 회사 개수까지 순회)
+  const maxRankRows = (await sql`
+    SELECT COALESCE(MAX(rank), 0)::INT AS r FROM preferences
+  `) as { r: number }[];
+  const maxRank = Number(maxRankRows[0]?.r ?? 0);
+
+  for (let rank = 1; rank <= maxRank; rank++) {
+    // rank 지망 후보를 회사별로 그룹핑 (아직 unmatched 팀만).
+    // 우선순위: 매칭권 개수 DESC → seed ASC → RANDOM()
+    const candidates = (await sql`
+      SELECT p.team_username, p.company_id,
+             COALESCE(SUM(t.count), 0)::INT AS total_tickets,
+             COALESCE(MAX(tm.seed), 0)::BIGINT AS seed
+      FROM preferences p
+      JOIN teams tm ON tm.username = p.team_username
+      LEFT JOIN tickets t ON t.team_username = p.team_username
+      WHERE p.rank = ${rank}
+      GROUP BY p.team_username, p.company_id, tm.seed
+      ORDER BY p.company_id, total_tickets DESC, seed ASC, RANDOM()
+    `) as {
+      team_username: string;
+      company_id: number;
+      total_tickets: number;
+      seed: number;
+    }[];
+
+    for (const cand of candidates) {
+      if (!unmatched.has(cand.team_username)) continue;
+      const cid = Number(cand.company_id);
+      const left = remainingSlots.get(cid) ?? 0;
+      if (left <= 0) continue;
+      await sql`
+        INSERT INTO final_matches (team_username, company_id, matched_rank)
+        VALUES (${cand.team_username}, ${cid}, ${rank})
+        ON CONFLICT (team_username) DO UPDATE
+          SET company_id = EXCLUDED.company_id, matched_rank = EXCLUDED.matched_rank
+      `;
+      unmatched.delete(cand.team_username);
+      remainingSlots.set(cid, left - 1);
+    }
+  }
+}
+
