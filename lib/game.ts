@@ -9,16 +9,12 @@ export const ROUND_ORDER = [
   "series-c",
 ] as const;
 
-// 라운드별 매칭권 최소 주문 금액 하한 (원 단위, 만원 배수).
 // 매칭권 자동정산 종료 시 다음 라운드의 min_order_price 는
-//   max(다음 라운드 floor, 승자 중 최저가) 로 갱신됨.
-// 게임 초기화 시에도 seed floor 가 강제됨.
-export const ROUND_PRICE_FLOORS: Record<string, number> = {
-  seed: 1_000_000, // 100만원
-  "series-a": 1_500_000, // 150만원
-  "series-b": 2_000_000, // 200만원
-  "series-c": 3_000_000, // 300만원
-};
+//   - 승자 2명 이상: 2등 승자 가격
+//   - 승자 1명: 그 팀 가격
+//   - 승자 0명: 유지
+// 회사별 초기 min_order_price 는 admin 이 회사 등록 시 설정 (initial_min_order_price 로 백업).
+// 라운드별 강제 floor 는 없음.
 
 // ===== 수익률 공식 (비대칭 σ) =====
 // R(M, Z) = mean(M) + σ(M, Z) · Z, Z ~ N(0,1) ∩ [-1, 1]
@@ -410,12 +406,13 @@ async function recordMatchingResult(
 //   3. seed   ASC          (count 까지 같으면 시드 적은 팀이 우선)
 //   4. RANDOM()            (시드까지 같으면 무작위)
 // 상위 topN 팀은 매칭권 확정, 나머지는 80% 환불.
-// nextRoundFloor 가 양수면 갱신된 min_order_price 는 max(floor, 승자 중 최저가).
-// 승자가 없어도 next round 진입 시 floor 로 끌어올림.
+// 다음 라운드 min_order_price 갱신:
+//   - 승자 2명 이상: 2등 승자의 가격 (2등이 다음 라운드 하한)
+//   - 승자 1명: 그 팀 가격
+//   - 승자 0명: 기존 값 유지
 export async function autoResolveMatchingPhase(
   round: string,
   topN: number,
-  nextRoundFloor: number = 0,
 ): Promise<void> {
   if (!Number.isInteger(topN) || topN < 0) {
     throw new Error("매칭권 상위 N 값은 0 이상의 정수여야 합니다");
@@ -430,6 +427,7 @@ export async function autoResolveMatchingPhase(
       ORDER BY b.price DESC, b.count DESC, t.seed ASC, RANDOM()
     `) as { team_username: string; price: number; count: number; seed: number }[];
 
+    // price DESC 정렬이므로 winnerPrices[0] 이 1등, [1] 이 2등.
     const winnerPrices: number[] = [];
     for (let i = 0; i < bids.length; i++) {
       const b = bids[i];
@@ -441,20 +439,14 @@ export async function autoResolveMatchingPhase(
       }
     }
 
-    // 다음 라운드 min_order_price = max(floor, 승자 중 최저가).
-    // 승자가 없으면 기존 값과 floor 만 비교.
-    if (winnerPrices.length > 0) {
-      const newMinPrice = Math.max(
-        nextRoundFloor,
-        Math.min(...winnerPrices),
-      );
-      await sql`UPDATE companies SET min_order_price = ${newMinPrice} WHERE id = ${c.id}`;
-    } else if (nextRoundFloor > 0) {
-      await sql`
-        UPDATE companies
-        SET min_order_price = GREATEST(min_order_price, ${nextRoundFloor})
-        WHERE id = ${c.id}
-      `;
+    // 다음 라운드 min_order_price 갱신
+    // - 승자 2명 이상: 2등 승자 가격
+    // - 승자 1명: 1등 (= 그 팀) 가격
+    // - 승자 0명: 유지
+    if (winnerPrices.length >= 2) {
+      await sql`UPDATE companies SET min_order_price = ${winnerPrices[1]} WHERE id = ${c.id}`;
+    } else if (winnerPrices.length === 1) {
+      await sql`UPDATE companies SET min_order_price = ${winnerPrices[0]} WHERE id = ${c.id}`;
     }
   }
 }
@@ -475,11 +467,9 @@ export async function opResetGame(): Promise<void> {
   // tickets 이미 삭제되었으므로 display_count 도 자연히 없음
   await sql`UPDATE teams SET seed = ${avg_initial_seed}, display_seed = NULL`;
   // 매칭권 자동정산이 덮어쓴 min_order_price 를 admin 이 마지막에 설정한 초기값으로 복구.
-  // 동시에 seed 라운드의 floor 도 강제 (initial 이 floor 보다 낮으면 floor 로 끌어올림).
-  const seedFloor = ROUND_PRICE_FLOORS["seed"] ?? 0;
   await sql`
     UPDATE companies
-    SET min_order_price = GREATEST(initial_min_order_price, ${seedFloor})
+    SET min_order_price = initial_min_order_price
   `;
   await sql`UPDATE game_state SET current_round = 'seed', current_phase = 'idle' WHERE id = 1`;
 }

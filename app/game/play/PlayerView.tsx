@@ -3,10 +3,10 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
-  playerSetInvestment,
-  playerClearInvestment,
-  playerSetBid,
-  playerClearBid,
+  playerSubmitInvestments,
+  playerClearAllInvestments,
+  playerSubmitBids,
+  playerClearAllBids,
   playerSellTickets,
   playerSetPreference,
   playerClearPreference,
@@ -22,7 +22,7 @@ import type {
   Team,
   Ticket,
 } from "./types";
-import { ROUND_LABELS, PHASE_LABELS, previousPlayableRound } from "./types";
+import { ROUND_LABELS, PHASE_LABELS, latestMatchingRound } from "./types";
 import {
   SettledResultsPanel,
   TicketHoldingsTable,
@@ -102,10 +102,8 @@ export function PlayerView({
           i.round === state.current_round && i.team_username === username,
       )
     : [];
-  const matchingResultRound =
-    state?.current_phase === "idle"
-      ? previousPlayableRound(state.current_round)
-      : null;
+  // 매칭 결과 delta 는 마지막으로 정산된 라운드를 계속 참조 — 다음 라운드 매칭이 정산될 때까지 유지.
+  const matchingResultRound = latestMatchingRound(data.matchingResults);
 
   return (
     <main className="page-shell max-w-5xl space-y-6">
@@ -323,7 +321,7 @@ function PassivePhasePanel({ phase }: { phase: string }) {
   );
 }
 
-// ===== 주식 단계: 투자하기 =====
+// ===== 주식 단계: 투자하기 (최종 제출/전체 취소 버튼 통합) =====
 
 function InvestSection({
   companies,
@@ -336,7 +334,54 @@ function InvestSection({
   seed: number;
   run: RunFn;
 }) {
+  // 서버 값을 초기값으로 삼아서 회사별 로컬 입력값 관리.
+  // key = company.id, value = 만원 단위 문자열.
+  // 서버 상태가 바뀌면 (제출 성공 후 refresh) key 로 remount 되어 재초기화됨.
+  const serverKey = companies
+    .map((c) => `${c.id}:${investments.find((i) => i.company_id === c.id)?.amount ?? 0}`)
+    .join(",");
+
+  return (
+    <InvestSectionInner
+      key={serverKey}
+      companies={companies}
+      investments={investments}
+      seed={seed}
+      run={run}
+    />
+  );
+}
+
+function InvestSectionInner({
+  companies,
+  investments,
+  seed,
+  run,
+}: {
+  companies: Company[];
+  investments: Investment[];
+  seed: number;
+  run: RunFn;
+}) {
+  const [values, setValues] = useState<Record<number, string>>(() => {
+    const init: Record<number, string> = {};
+    for (const c of companies) {
+      const inv = investments.find((i) => i.company_id === c.id);
+      init[c.id] = String(wonToManwon(inv?.amount ?? 0));
+    }
+    return init;
+  });
+
   const investedTotal = investments.reduce((s, i) => s + i.amount, 0);
+  const rawSeed = seed + investedTotal; // 제출 전 총 가용 시드 (현재 남은 seed + 이미 투자된 금액)
+  const plannedTotal = companies.reduce((sum, c) => {
+    const v = Number(values[c.id] ?? "");
+    return sum + (Number.isFinite(v) && v > 0 ? manwonToWon(v) : 0);
+  }, 0);
+  const remainingAfterSubmit = rawSeed - plannedTotal;
+  const overBudget = remainingAfterSubmit < 0;
+
+  const anyServerInvested = investedTotal > 0;
 
   return (
     <section className="surface-panel panel-pad">
@@ -344,11 +389,22 @@ function InvestSection({
         <div>
           <p className="eyebrow">Stock Phase</p>
           <h2 className="text-2xl font-black">투자하기</h2>
+          <p className="mt-1 text-xs text-[#667065]">
+            각 회사에 투자 금액을 입력한 뒤 <strong>최종 제출</strong> 버튼을 눌러 한 번에 저장하세요.
+          </p>
         </div>
         <div className="flex flex-wrap gap-2">
           <span className="phase-pill">남은 seed {formatManwon(seed)}</span>
           <span className="phase-pill">
-            투자 합계 {formatManwon(investedTotal)}
+            저장된 투자 {formatManwon(investedTotal)}
+          </span>
+          <span
+            className={
+              "phase-pill " + (overBudget ? "text-[#b42318]" : "")
+            }
+          >
+            제출 후 예상 잔액 {formatManwon(Math.max(0, remainingAfterSubmit))}
+            {overBudget && " · 초과"}
           </span>
         </div>
       </div>
@@ -356,19 +412,57 @@ function InvestSection({
       {companies.length === 0 ? (
         <p className="text-sm text-[#667065]">아직 등록된 회사가 없습니다.</p>
       ) : (
-        <div className="grid gap-3">
-          {companies.map((c) => {
-            const inv = investments.find((i) => i.company_id === c.id);
-            return (
-              <InvestRow
-                key={`${c.id}-${inv?.amount ?? 0}`}
-                company={c}
-                currentAmount={inv?.amount ?? 0}
-                run={run}
-              />
-            );
-          })}
-        </div>
+        <>
+          <div className="grid gap-3">
+            {companies.map((c) => {
+              const inv = investments.find((i) => i.company_id === c.id);
+              return (
+                <InvestRow
+                  key={c.id}
+                  company={c}
+                  currentAmount={inv?.amount ?? 0}
+                  value={values[c.id] ?? ""}
+                  onChange={(v) => setValues((prev) => ({ ...prev, [c.id]: v }))}
+                />
+              );
+            })}
+          </div>
+
+          <div className="mt-5 flex flex-wrap justify-end gap-2">
+            {anyServerInvested && (
+              <button
+                type="button"
+                onClick={() => {
+                  if (confirm("이 라운드의 모든 투자를 취소할까요?")) {
+                    run(() => playerClearAllInvestments());
+                  }
+                }}
+                className="btn-danger"
+              >
+                전체 취소
+              </button>
+            )}
+            <button
+              type="button"
+              disabled={overBudget}
+              onClick={() => {
+                const entries = companies.map((c) => {
+                  const raw = values[c.id] ?? "";
+                  const num = Number(raw);
+                  const amountWon =
+                    raw.trim() === "" || !Number.isFinite(num) || num <= 0
+                      ? 0
+                      : manwonToWon(num);
+                  return { companyId: c.id, amountWon };
+                });
+                run(() => playerSubmitInvestments(entries));
+              }}
+              className="btn-primary disabled:opacity-40"
+            >
+              최종 제출
+            </button>
+          </div>
+        </>
       )}
     </section>
   );
@@ -377,21 +471,21 @@ function InvestSection({
 function InvestRow({
   company,
   currentAmount,
-  run,
+  value,
+  onChange,
 }: {
   company: Company;
   currentAmount: number;
-  run: RunFn;
+  value: string;
+  onChange: (v: string) => void;
 }) {
-  const [v, setV] = useState(String(wonToManwon(currentAmount)));
-
   return (
     <div className="market-row">
-      <div className="grid gap-3 lg:grid-cols-[1fr_160px_260px] lg:items-center">
+      <div className="grid gap-3 lg:grid-cols-[1fr_200px] lg:items-center">
         <div>
           <div className="text-lg font-black">{company.name}</div>
           <div className="muted-label">
-            현재 투자 {formatManwon(currentAmount)}
+            현재 저장된 투자 {formatManwon(currentAmount)}
           </div>
         </div>
         <label className="block">
@@ -399,42 +493,20 @@ function InvestRow({
           <div className="mt-1 flex items-center gap-2">
             <input
               type="number"
-              value={v}
-              onChange={(e) => setV(e.target.value)}
+              value={value}
+              onChange={(e) => onChange(e.target.value)}
               className="field-input w-full"
               min={0}
             />
             <span className="text-sm font-semibold text-[#667065]">만원</span>
           </div>
         </label>
-        <div className="flex flex-wrap justify-start gap-2 lg:justify-end">
-          <button
-            type="button"
-            onClick={() =>
-              run(() =>
-                playerSetInvestment(company.id, manwonToWon(Number(v))),
-              )
-            }
-            className="btn-primary"
-          >
-            저장
-          </button>
-          {currentAmount > 0 && (
-            <button
-              type="button"
-              onClick={() => run(() => playerClearInvestment(company.id))}
-              className="btn-danger"
-            >
-              취소
-            </button>
-          )}
-        </div>
       </div>
     </div>
   );
 }
 
-// ===== 매칭권 단계: 입찰하기 =====
+// ===== 매칭권 단계: 입찰하기 (최종 제출/전체 취소 버튼 통합) =====
 
 function BidSection({
   companies,
@@ -447,7 +519,100 @@ function BidSection({
   seed: number;
   run: RunFn;
 }) {
-  const bidTotal = bids.reduce((s, b) => s + b.price * b.count, 0);
+  // 서버 값이 바뀌면 로컬 입력이 재초기화되도록 key 로 강제 remount.
+  const serverKey = companies
+    .map((c) => {
+      const b = bids.find((x) => x.company_id === c.id);
+      return `${c.id}:${b?.price ?? 0}:${b?.count ?? 0}`;
+    })
+    .join(",");
+
+  return (
+    <BidSectionInner
+      key={serverKey}
+      companies={companies}
+      bids={bids}
+      seed={seed}
+      run={run}
+    />
+  );
+}
+
+function BidSectionInner({
+  companies,
+  bids,
+  seed,
+  run,
+}: {
+  companies: Company[];
+  bids: Bid[];
+  seed: number;
+  run: RunFn;
+}) {
+  const [prices, setPrices] = useState<Record<number, string>>(() => {
+    const init: Record<number, string> = {};
+    for (const c of companies) {
+      const b = bids.find((x) => x.company_id === c.id);
+      init[c.id] = b ? String(wonToManwon(b.price)) : "";
+    }
+    return init;
+  });
+  const [counts, setCounts] = useState<Record<number, string>>(() => {
+    const init: Record<number, string> = {};
+    for (const c of companies) {
+      const b = bids.find((x) => x.company_id === c.id);
+      init[c.id] = b ? String(b.count) : "";
+    }
+    return init;
+  });
+
+  // 서버 상 실제로 잠긴 시드 (bid 합계) + 남은 seed = 총 가용 시드
+  const serverBidTotal = bids.reduce((s, b) => s + b.price * b.count, 0);
+  const rawSeed = seed + serverBidTotal;
+
+  // 각 행별 유효성 계산
+  type RowState = {
+    company: Company;
+    priceRaw: string;
+    countRaw: string;
+    priceWon: number;
+    count: number;
+    hasInput: boolean;
+    tooLow: boolean;
+    costWon: number;
+    invalidRow: boolean; // 가격만 있고 개수 없음 등
+  };
+  const rows: RowState[] = companies.map((c) => {
+    const priceRaw = (prices[c.id] ?? "").trim();
+    const countRaw = (counts[c.id] ?? "").trim();
+    const priceNum = Number(priceRaw);
+    const countNum = Number(countRaw);
+    const priceValid = priceRaw !== "" && Number.isFinite(priceNum) && priceNum > 0;
+    const countValid =
+      countRaw !== "" && Number.isInteger(countNum) && countNum >= 1;
+    const priceWon = priceValid ? manwonToWon(priceNum) : 0;
+    const hasAny = priceRaw !== "" || countRaw !== "";
+    const bothFilled = priceValid && countValid;
+    return {
+      company: c,
+      priceRaw,
+      countRaw,
+      priceWon,
+      count: countValid ? countNum : 0,
+      hasInput: bothFilled,
+      tooLow: priceValid && priceWon < c.min_order_price,
+      costWon: bothFilled ? priceWon * countNum : 0,
+      invalidRow: hasAny && !bothFilled,
+    };
+  });
+
+  const plannedTotal = rows.reduce((s, r) => s + r.costWon, 0);
+  const remainingAfterSubmit = rawSeed - plannedTotal;
+  const overBudget = remainingAfterSubmit < 0;
+  const anyTooLow = rows.some((r) => r.hasInput && r.tooLow);
+  const anyInvalid = rows.some((r) => r.invalidRow);
+  const canSubmit = !overBudget && !anyTooLow && !anyInvalid;
+  const anyServerBid = bids.length > 0;
 
   return (
     <section className="surface-panel panel-pad">
@@ -455,29 +620,94 @@ function BidSection({
         <div>
           <p className="eyebrow">Matching Phase</p>
           <h2 className="text-2xl font-black">매칭권 구매</h2>
+          <p className="mt-1 text-xs text-[#667065]">
+            각 회사에 가격과 개수를 입력한 뒤 <strong>최종 제출</strong> 버튼으로 한 번에 저장하세요.
+            입력 안 한 회사는 자동으로 입찰에서 제외됩니다.
+          </p>
         </div>
         <div className="flex flex-wrap gap-2">
           <span className="phase-pill">남은 seed {formatManwon(seed)}</span>
-          <span className="phase-pill">입찰 금액 {formatManwon(bidTotal)}</span>
+          <span className="phase-pill">현재 입찰 금액 {formatManwon(serverBidTotal)}</span>
+          <span
+            className={
+              "phase-pill " + (overBudget ? "text-[#b42318]" : "")
+            }
+          >
+            제출 후 예상 잔액 {formatManwon(Math.max(0, remainingAfterSubmit))}
+            {overBudget && " · 초과"}
+          </span>
         </div>
       </div>
 
       {companies.length === 0 ? (
         <p className="text-sm text-[#667065]">아직 등록된 회사가 없습니다.</p>
       ) : (
-        <div className="grid gap-3">
-          {companies.map((c) => {
-            const bid = bids.find((b) => b.company_id === c.id);
-            return (
-              <BidRow
-                key={`${c.id}-${bid?.price ?? 0}-${bid?.count ?? 0}`}
-                company={c}
-                currentBid={bid ?? null}
-                run={run}
-              />
-            );
-          })}
-        </div>
+        <>
+          <div className="grid gap-3">
+            {rows.map((r) => {
+              const currentBid = bids.find((b) => b.company_id === r.company.id) ?? null;
+              return (
+                <BidRow
+                  key={r.company.id}
+                  company={r.company}
+                  currentBid={currentBid}
+                  priceRaw={r.priceRaw}
+                  countRaw={r.countRaw}
+                  costWon={r.costWon}
+                  tooLow={r.tooLow}
+                  invalidRow={r.invalidRow}
+                  onPriceChange={(v) =>
+                    setPrices((prev) => ({ ...prev, [r.company.id]: v }))
+                  }
+                  onCountChange={(v) =>
+                    setCounts((prev) => ({ ...prev, [r.company.id]: v }))
+                  }
+                />
+              );
+            })}
+          </div>
+
+          <div className="mt-5 flex flex-wrap items-center justify-end gap-2">
+            {anyTooLow && (
+              <span className="text-sm font-semibold text-[#b42318] mr-auto">
+                최소 주문 금액 미만인 회사가 있습니다
+              </span>
+            )}
+            {anyInvalid && !anyTooLow && (
+              <span className="text-sm font-semibold text-[#b42318] mr-auto">
+                가격과 개수는 함께 입력해야 합니다
+              </span>
+            )}
+            {anyServerBid && (
+              <button
+                type="button"
+                onClick={() => {
+                  if (confirm("모든 매칭권 입찰을 취소할까요?")) {
+                    run(() => playerClearAllBids());
+                  }
+                }}
+                className="btn-danger"
+              >
+                전체 취소
+              </button>
+            )}
+            <button
+              type="button"
+              disabled={!canSubmit}
+              onClick={() => {
+                const entries = rows.map((r) => ({
+                  companyId: r.company.id,
+                  priceWon: r.priceWon,
+                  count: r.hasInput ? r.count : 0,
+                }));
+                run(() => playerSubmitBids(entries));
+              }}
+              className="btn-primary disabled:opacity-40"
+            >
+              최종 제출
+            </button>
+          </div>
+        </>
       )}
     </section>
   );
@@ -486,33 +716,27 @@ function BidSection({
 function BidRow({
   company,
   currentBid,
-  run,
+  priceRaw,
+  countRaw,
+  costWon,
+  tooLow,
+  invalidRow,
+  onPriceChange,
+  onCountChange,
 }: {
   company: Company;
   currentBid: Bid | null;
-  run: RunFn;
+  priceRaw: string;
+  countRaw: string;
+  costWon: number;
+  tooLow: boolean;
+  invalidRow: boolean;
+  onPriceChange: (v: string) => void;
+  onCountChange: (v: string) => void;
 }) {
-  const [priceManwon, setPriceManwon] = useState(
-    currentBid ? String(wonToManwon(currentBid.price)) : "",
-  );
-  const [count, setCount] = useState(
-    currentBid ? String(currentBid.count) : "",
-  );
-
-  const priceManwonNum = Number(priceManwon);
-  const countNum = Number(count);
-  const priceValid =
-    priceManwon.trim() !== "" && Number.isFinite(priceManwonNum);
-  const countValid =
-    count.trim() !== "" && Number.isInteger(countNum) && countNum >= 1;
-  const priceWon = manwonToWon(priceManwonNum);
-  const tooLow = priceValid && priceWon < company.min_order_price;
-  const costWon = (priceValid ? priceWon : 0) * (countValid ? countNum : 0);
-  const canBid = priceValid && countValid && !tooLow;
-
   return (
     <div className="market-row">
-      <div className="grid gap-3 xl:grid-cols-[1fr_190px_120px_260px] xl:items-center">
+      <div className="grid gap-3 xl:grid-cols-[1fr_190px_120px_180px] xl:items-center">
         <div>
           <div className="text-lg font-black">{company.name}</div>
           <div className="muted-label">
@@ -520,8 +744,8 @@ function BidRow({
           </div>
           <div className="mt-1 text-sm text-[#667065]">
             {currentBid
-              ? `현재 ${formatManwon(currentBid.price)} x ${currentBid.count}개`
-              : "현재 입찰 없음"}
+              ? `현재 저장된 입찰 ${formatManwon(currentBid.price)} × ${currentBid.count}개`
+              : "현재 저장된 입찰 없음"}
           </div>
         </div>
         <label className="block">
@@ -530,8 +754,8 @@ function BidRow({
             <input
               type="number"
               placeholder="가격"
-              value={priceManwon}
-              onChange={(e) => setPriceManwon(e.target.value)}
+              value={priceRaw}
+              onChange={(e) => onPriceChange(e.target.value)}
               className="field-input w-full"
               min={0}
             />
@@ -543,40 +767,24 @@ function BidRow({
           <input
             type="number"
             placeholder="개수"
-            value={count}
-            onChange={(e) => setCount(e.target.value)}
+            value={countRaw}
+            onChange={(e) => onCountChange(e.target.value)}
             className="field-input mt-1 w-full"
             min={1}
           />
         </label>
-        <div className="flex flex-wrap items-end justify-between gap-2 xl:justify-end">
-          <div className="mr-auto xl:mr-0 xl:text-right">
-            <div className="muted-label">총액</div>
-            <div className="text-lg font-black">{formatManwon(costWon)}</div>
-            {tooLow && (
-              <div className="text-sm font-semibold text-[#b42318]">
-                금액이 낮습니다
-              </div>
-            )}
-          </div>
-          <button
-            type="button"
-            disabled={!canBid}
-            onClick={() =>
-              run(() => playerSetBid(company.id, priceWon, countNum))
-            }
-            className="btn-primary"
-          >
-            입찰
-          </button>
-          {currentBid && (
-            <button
-              type="button"
-              onClick={() => run(() => playerClearBid(company.id))}
-              className="btn-danger"
-            >
-              취소
-            </button>
+        <div className="xl:text-right">
+          <div className="muted-label">총액</div>
+          <div className="text-lg font-black">{formatManwon(costWon)}</div>
+          {tooLow && (
+            <div className="text-sm font-semibold text-[#b42318]">
+              금액이 낮습니다
+            </div>
+          )}
+          {invalidRow && !tooLow && (
+            <div className="text-sm font-semibold text-[#b42318]">
+              가격/개수 모두 입력
+            </div>
           )}
         </div>
       </div>
@@ -701,11 +909,11 @@ function MyResultsPanel({
   const state = data.state;
   if (!state) return null;
 
-  if (state.current_phase === "idle") {
+  // results 페이즈: 이번 라운드 투자 결과가 우선.
+  // 그 외 (idle / stock / matching / preference / final-result): 마지막 매칭권 정산 결과를 계속 표시.
+  if (state.current_phase !== "results") {
     return <MyMatchingResultsPanel data={data} username={username} />;
   }
-
-  if (state.current_phase !== "results") return null;
 
   const resultRound = state.current_round;
 
@@ -849,7 +1057,8 @@ function MyMatchingResultsPanel({
   const state = data.state;
   if (!state) return null;
 
-  const resultRound = previousPlayableRound(state.current_round);
+  // 마지막으로 매칭 정산된 라운드를 참조. 다음 라운드 매칭이 정산될 때까지 유지됨.
+  const resultRound = latestMatchingRound(data.matchingResults);
   if (!resultRound) return null;
 
   const myResults = data.matchingResults.filter(
@@ -875,7 +1084,7 @@ function MyMatchingResultsPanel({
             {ROUND_LABELS[resultRound]} 매칭권 입찰 결과
           </h2>
         </div>
-        <span className="phase-pill">직전 라운드</span>
+        <span className="phase-pill">최근 매칭 결과</span>
       </div>
       {companyIds.length === 0 ? (
         <p className="text-sm text-[#667065]">

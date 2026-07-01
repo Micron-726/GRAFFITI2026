@@ -43,7 +43,7 @@ import {
   PHASE_LABELS,
   compareUsernames,
   describeNext,
-  previousPlayableRound,
+  latestMatchingRound,
 } from "./types";
 import { SettledResultsPanel, TicketHoldingsTable } from "./shared";
 import { formatManwon, manwonToWon, wonToManwon, MANWON } from "./format";
@@ -208,11 +208,7 @@ export function AdminDashboard({ data }: { data: GameData }) {
         tickets={data.tickets}
         matchingResults={data.matchingResults}
         ticketSales={data.ticketSales}
-        deltaRound={
-          state.current_phase === "idle"
-            ? previousPlayableRound(state.current_round)
-            : null
-        }
+        deltaRound={latestMatchingRound(data.matchingResults)}
         useSnapshot={state.current_phase === "matching"}
       />
 

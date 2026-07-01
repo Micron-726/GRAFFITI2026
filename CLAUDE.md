@@ -109,7 +109,7 @@
 
 [lib/game.ts](lib/game.ts) `computeNextState`. admin 의 **"다음 단계로 넘어가기"** 버튼(맨 아래 오른쪽).
 - **stock → results** 전이 시 `settleStockRound` 자동 수익률 정산
-- **matching → next round** 전이 시 `autoResolveMatchingPhase(round, matching_top_n, nextRoundFloor)` 자동 매칭권 정산 (회사별 높은 가격 → 많은 개수 → 낮은 seed 순 상위 N 팀 확정, 그래도 같으면 랜덤, 나머지 80% 환불, `min_order_price = max(floor, 승자 최저가)`)
+- **matching → next round** 전이 시 `autoResolveMatchingPhase(round, matching_top_n)` 자동 매칭권 정산 (회사별 높은 가격 → 많은 개수 → 낮은 seed 순 상위 N 팀 확정, 그래도 같으면 랜덤, 나머지 80% 환불, 다음 라운드 `min_order_price` = 2등 승자 가격 · 승자 1명이면 그 가격 · 없으면 유지)
 - **series-c matching → final preference** 전이 (참가자 지망 제출 단계 진입)
 - **final preference → final-result** 전이 시 `computeFinalMatching()` 자동 실행 (지망 순위 > 매칭권 개수 DESC > seed DESC (많이 남은 팀 우선) > random 순으로 배정)
 - **final-result → ended idle** 전이 시 게임 종료
@@ -157,21 +157,18 @@ k = k_scale / (team_count × avg_initial_seed)    ← DB game_state 에서 읽�
 - **균형**: 고점 diff = 저점 diff = 20%p (양쪽 대칭). Δmean=10, Δσ_up=30, Δσ_down=10.
 - 구현: [lib/game.ts](lib/game.ts) `computeYieldPct(M, teamCount, avgInitialSeed)`. `settleStockRound` 가 game_state 에서 두 값을 읽고 회사별 SUM 후 호출 → 만원 단위 내림 적용.
 
-## 라운드별 매칭권 최소 주문 금액 하한
+## 매칭권 최소 주문 금액 갱신
 
-[lib/game.ts](lib/game.ts) `ROUND_PRICE_FLOORS` (원 단위):
-- seed: 100만원
-- series-a: 150만원
-- series-b: 200만원
-- series-c: 300만원
+매칭권 자동정산 종료 시 회사별 `min_order_price` 는 다음처럼 갱신:
+- **승자 2명 이상**: 2등 승자 가격 (price DESC 정렬 기준 index 1)
+- **승자 1명**: 그 팀의 입찰가
+- **승자 0명**: 기존 값 유지
 
-매칭권 자동정산 종료 시 다음 라운드 진입 → 회사 `min_order_price = max(다음 라운드 floor, 승자 중 최저가)`.
-승자 없는 회사는 `min_order_price = max(현 값, 다음 라운드 floor)`.
-`opResetGame` 도 `min_order_price = max(initial_min_order_price, seed_floor)` 로 복구.
+라운드별 강제 floor 는 없음. 회사 초기 `min_order_price` 는 admin 이 회사 등록 시 지정한 값 (`initial_min_order_price` 로 백업). `opResetGame` 은 `min_order_price = initial_min_order_price` 로 복구.
 
 ## 매칭권 자동정산 우선순위
 
-`autoResolveMatchingPhase(round, topN, nextRoundFloor)` 의 SQL 정렬:
+`autoResolveMatchingPhase(round, topN)` 의 SQL 정렬:
 1. `price DESC` — 높은 가격 우선
 2. `count DESC` — 같은 가격이면 많이 산 팀 우선
 3. `seed ASC` — 같은 개수면 시드 적은 팀 우선
@@ -227,7 +224,7 @@ router.refresh();
 
 ### [lib/game.ts](lib/game.ts) 공유 ops (auth 검증 안 함)
 
-`opSetInvestment`, `opClearInvestment`, `opSetBid`, `opClearBid`, `opSellTickets(round, ...)`, `opAwardBid(round, ...)`, `opRefundFailedBid(round, ...)`, `settleStockRound`, `autoResolveMatchingPhase(round, topN)`, `readGameState`, `computeNextState`.
+`opSetInvestment`, `opClearInvestment`, `opSetBid`, `opClearBid`, `opSellTickets(round, ...)`, `opAwardBid(round, ...)`, `opRefundFailedBid(round, ...)`, `settleStockRound`, `autoResolveMatchingPhase(round, topN)` — 다음 라운드 `min_order_price` = 2등 승자 가격, `readGameState`, `computeNextState`.
 
 ## 라우트 / UI 구조
 

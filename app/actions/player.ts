@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { getSession } from "@/lib/auth";
 import { isAdminUsername } from "@/lib/permissions";
+import { sql } from "@/lib/db";
 import {
   readGameState,
   opSetInvestment,
@@ -75,6 +76,53 @@ export async function playerClearInvestment(
   });
 }
 
+// 여러 회사의 투자 값을 한 번에 제출. amount === 0 은 해당 회사 clear, > 0 은 set.
+// 각 op 는 자체 seed 검증을 하므로 순차적으로 실행.
+export async function playerSubmitInvestments(
+  entries: { companyId: number; amountWon: number }[],
+): Promise<ActionResult> {
+  return guard(async (username) => {
+    const state = await readGameState();
+    if (state.current_phase !== "stock") {
+      throw new Error("지금은 투자할 수 있는 단계가 아닙니다");
+    }
+    if (!Array.isArray(entries)) throw new Error("잘못된 입력");
+    // 시드 부족 위험을 줄이려면 clear 를 먼저 처리해서 seed 를 회복시킨 뒤 set 을 처리.
+    const clears = entries.filter((e) => e.amountWon === 0);
+    const sets = entries.filter((e) => e.amountWon > 0);
+    for (const e of clears) {
+      if (!Number.isInteger(e.companyId)) throw new Error("잘못된 회사");
+      await opClearInvestment(state.current_round, username, e.companyId);
+    }
+    for (const e of sets) {
+      if (!Number.isInteger(e.companyId)) throw new Error("잘못된 회사");
+      if (!Number.isInteger(e.amountWon) || e.amountWon < 0) {
+        throw new Error("투자 금액은 0 이상의 정수여야 합니다");
+      }
+      await opSetInvestment(state.current_round, username, e.companyId, e.amountWon);
+    }
+    refresh();
+  });
+}
+
+// 이 라운드의 내 투자 전체 clear.
+export async function playerClearAllInvestments(): Promise<ActionResult> {
+  return guard(async (username) => {
+    const state = await readGameState();
+    if (state.current_phase !== "stock") {
+      throw new Error("지금은 투자를 취소할 수 있는 단계가 아닙니다");
+    }
+    const rows = (await sql`
+      SELECT company_id FROM investments
+      WHERE round = ${state.current_round} AND team_username = ${username}
+    `) as { company_id: number }[];
+    for (const r of rows) {
+      await opClearInvestment(state.current_round, username, Number(r.company_id));
+    }
+    refresh();
+  });
+}
+
 export async function playerSetBid(
   companyId: number,
   price: number,
@@ -101,6 +149,48 @@ export async function playerClearBid(
       throw new Error("지금은 매칭권 입찰을 취소할 수 있는 단계가 아닙니다");
     }
     await opClearBid(username, companyId);
+    refresh();
+  });
+}
+
+// 여러 회사의 입찰을 한 번에 제출. count === 0 은 clear, > 0 은 set.
+export async function playerSubmitBids(
+  entries: { companyId: number; priceWon: number; count: number }[],
+): Promise<ActionResult> {
+  return guard(async (username) => {
+    const state = await readGameState();
+    if (state.current_phase !== "matching") {
+      throw new Error("지금은 매칭권을 살 수 있는 단계가 아닙니다");
+    }
+    if (!Array.isArray(entries)) throw new Error("잘못된 입력");
+    // clear 를 먼저 처리해서 seed 회복 → 새 set 이 시드 부족으로 실패 확률을 낮춤.
+    const clears = entries.filter((e) => e.count === 0);
+    const sets = entries.filter((e) => e.count > 0);
+    for (const e of clears) {
+      if (!Number.isInteger(e.companyId)) throw new Error("잘못된 회사");
+      await opClearBid(username, e.companyId);
+    }
+    for (const e of sets) {
+      if (!Number.isInteger(e.companyId)) throw new Error("잘못된 회사");
+      await opSetBid(username, e.companyId, e.priceWon, e.count);
+    }
+    refresh();
+  });
+}
+
+// 이 팀의 모든 매칭권 입찰 clear.
+export async function playerClearAllBids(): Promise<ActionResult> {
+  return guard(async (username) => {
+    const state = await readGameState();
+    if (state.current_phase !== "matching") {
+      throw new Error("지금은 매칭권 입찰을 취소할 수 있는 단계가 아닙니다");
+    }
+    const rows = (await sql`
+      SELECT company_id FROM bids WHERE team_username = ${username}
+    `) as { company_id: number }[];
+    for (const r of rows) {
+      await opClearBid(username, Number(r.company_id));
+    }
     refresh();
   });
 }

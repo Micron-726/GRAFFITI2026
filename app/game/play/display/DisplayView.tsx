@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { useRouter } from "next/navigation";
 import type { Company, FinalMatch, GameData, Team } from "../types";
-import { ROUND_LABELS, PHASE_LABELS, previousPlayableRound } from "../types";
+import { ROUND_LABELS, PHASE_LABELS, latestMatchingRound } from "../types";
 import { formatManwon } from "../format";
 import {
   SettledResultsPanel,
@@ -65,10 +65,8 @@ export function DisplayView({ data }: { data: GameData }) {
           state.current_round,
         )
       : undefined;
-  const matchingResultRound =
-    state?.current_phase === "idle"
-      ? previousPlayableRound(state.current_round)
-      : null;
+  // 마지막으로 정산된 매칭 라운드의 (+N/-N) 델타를 계속 표시. 다음 라운드 매칭 정산 시 자동 갱신.
+  const matchingResultRound = latestMatchingRound(data.matchingResults);
 
   return (
     <main className="page-shell max-w-7xl">

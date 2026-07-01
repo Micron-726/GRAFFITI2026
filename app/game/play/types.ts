@@ -170,6 +170,22 @@ export function latestSettledRound(
   return best;
 }
 
+/** matching_results 중 가장 마지막에 정산된 라운드. TicketHoldingsTable 의 (+N/-N) 델타 표시용. */
+export function latestMatchingRound(
+  matchingResults: MatchingResult[],
+): Round | null {
+  let best: Round | null = null;
+  let bestIdx = -1;
+  for (const mr of matchingResults) {
+    const idx = PLAYABLE_ORDER.indexOf(mr.round);
+    if (idx > bestIdx) {
+      bestIdx = idx;
+      best = mr.round;
+    }
+  }
+  return best;
+}
+
 /** "다음 단계로 넘어가기" 버튼에 표시할 다음 상태 설명 (UI 전용) */
 export function describeNext(round: Round, phase: Phase): string {
   if (round === "ended") return "게임이 종료되었습니다";

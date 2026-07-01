@@ -20,7 +20,6 @@ import {
   clearTeamSnapshot,
   freezeTicketSnapshot,
   clearTicketSnapshot,
-  ROUND_PRICE_FLOORS,
   computeFinalMatching,
 } from "@/lib/game";
 
@@ -113,9 +112,7 @@ export async function advanceToNextPhase(): Promise<ActionResult> {
       await settleStockRound(current_round);
     }
     if (current_phase === "matching") {
-      const next = computeNextState(current_round, current_phase);
-      const floor = ROUND_PRICE_FLOORS[next.round] ?? 0;
-      await autoResolveMatchingPhase(current_round, matching_top_n, floor);
+      await autoResolveMatchingPhase(current_round, matching_top_n);
     }
     // 최종 팀 매칭: preference → final-result 전환 시 자동 매칭 실행
     if (current_round === "final" && current_phase === "preference") {
