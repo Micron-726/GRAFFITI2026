@@ -211,7 +211,9 @@ export function PlayerView({
         teams={data.teams}
         tickets={data.tickets}
         matchingResults={data.matchingResults}
+        ticketSales={data.ticketSales}
         deltaRound={matchingResultRound}
+        useSnapshot={state?.current_phase === "matching"}
         myUsername={username}
       />
     </main>

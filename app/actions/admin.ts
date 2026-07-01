@@ -18,6 +18,8 @@ import {
   opResetGame,
   freezeTeamSnapshot,
   clearTeamSnapshot,
+  freezeTicketSnapshot,
+  clearTicketSnapshot,
   ROUND_PRICE_FLOORS,
   computeFinalMatching,
 } from "@/lib/game";
@@ -126,10 +128,18 @@ export async function advanceToNextPhase(): Promise<ActionResult> {
       WHERE id = 1
     `;
     // 다음 단계에 따라 스냅샷 처리
+    // - stock/matching 진입: seed 스냅샷 freeze (다른 팀 시드 실시간 노출 방지)
+    // - matching 진입: 매칭권 스냅샷도 freeze (판매로 인한 count 감소가 즉시 노출되지 않도록)
+    // - 그 외 (idle/results/preference/final-result): 둘 다 clear → 실시간 값 표시
     if (next.phase === "stock" || next.phase === "matching") {
       await freezeTeamSnapshot();
     } else {
       await clearTeamSnapshot();
+    }
+    if (next.phase === "matching") {
+      await freezeTicketSnapshot();
+    } else {
+      await clearTicketSnapshot();
     }
     refresh();
   });

@@ -193,11 +193,13 @@ export function AdminDashboard({ data }: { data: GameData }) {
         teams={data.teams}
         tickets={data.tickets}
         matchingResults={data.matchingResults}
+        ticketSales={data.ticketSales}
         deltaRound={
           state.current_phase === "idle"
             ? previousPlayableRound(state.current_round)
             : null
         }
+        useSnapshot={state.current_phase === "matching"}
       />
 
       <AdvanceButton state={state} run={run} />

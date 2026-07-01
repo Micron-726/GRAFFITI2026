@@ -9,6 +9,7 @@ import type {
   RoundResult,
   Team,
   Ticket,
+  TicketSale,
 } from "./types";
 import { ROUND_LABELS, compareUsernames, latestSettledRound } from "./types";
 import { formatManwon } from "./format";
@@ -363,29 +364,52 @@ export function TicketHoldingsTable({
   teams,
   tickets,
   matchingResults = [],
+  ticketSales = [],
   deltaRound = null,
   myUsername = null,
+  useSnapshot = false,
 }: {
   companies: Company[];
   teams: Team[];
   tickets: Ticket[];
   matchingResults?: MatchingResult[];
+  ticketSales?: TicketSale[];
   deltaRound?: Round | null;
   /** 지정하면 해당 팀 행을 강조 표시 */
   myUsername?: string | null;
+  /** true 면 매칭 단계 진입 시점의 display_count 를 사용 (판매 즉시 노출 방지) */
+  useSnapshot?: boolean;
 }) {
   if (teams.length === 0 || companies.length === 0) return null;
 
-  const get = (u: string, cid: number) =>
-    tickets.find((t) => t.team_username === u && t.company_id === cid)?.count ??
-    0;
+  const get = (u: string, cid: number) => {
+    const t = tickets.find(
+      (x) => x.team_username === u && x.company_id === cid,
+    );
+    if (!t) return 0;
+    if (
+      useSnapshot &&
+      t.display_count !== null &&
+      t.display_count !== undefined
+    ) {
+      return t.display_count;
+    }
+    return t.count;
+  };
   const deltaResults = deltaRound
     ? matchingResults.filter((result) => result.round === deltaRound)
     : [];
-  const getDelta = (u: string, cid: number) =>
+  const deltaSales = deltaRound
+    ? ticketSales.filter((sale) => sale.round === deltaRound)
+    : [];
+  const getAwarded = (u: string, cid: number) =>
     deltaResults.find(
       (result) => result.team_username === u && result.company_id === cid,
     )?.awarded_count ?? 0;
+  const getSold = (u: string, cid: number) =>
+    deltaSales.find(
+      (sale) => sale.team_username === u && sale.company_id === cid,
+    )?.count ?? 0;
   const getMinOrderSnapshot = (cid: number) =>
     deltaResults.find((result) => result.company_id === cid)?.min_order_price;
 
@@ -450,16 +474,22 @@ export function TicketHoldingsTable({
                   </td>
                   {companies.map((c) => {
                     const count = get(t.username, c.id);
-                    const delta = getDelta(t.username, c.id);
+                    const awarded = getAwarded(t.username, c.id);
+                    const sold = getSold(t.username, c.id);
                     return (
                       <td
                         key={c.id}
                         className="text-right font-semibold tabular-nums"
                       >
                         <span>{count}</span>
-                        {delta > 0 && (
+                        {awarded > 0 && (
                           <span className="ml-1 font-black text-[#166534]">
-                            (+{delta})
+                            (+{awarded})
+                          </span>
+                        )}
+                        {sold > 0 && (
+                          <span className="ml-1 font-black text-[#991b1b]">
+                            (−{sold})
                           </span>
                         )}
                       </td>

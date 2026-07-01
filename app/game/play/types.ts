@@ -57,6 +57,8 @@ export type Ticket = {
   team_username: string;
   company_id: number;
   count: number;
+  /** matching 단계 동안 표시용 스냅샷. NULL 이면 실시간 count 사용. */
+  display_count: number | null;
 };
 
 export type Investment = {
@@ -145,6 +147,8 @@ const PLAYABLE_ORDER: Round[] = ["seed", "series-a", "series-b", "series-c"];
 
 export function previousPlayableRound(round: Round): Round | null {
   if (round === "ended") return PLAYABLE_ORDER[PLAYABLE_ORDER.length - 1];
+  // final 라운드 idle 은 series-c 매칭 종료 직후 → 이전 매칭 라운드 = series-c
+  if (round === "final") return "series-c";
   const idx = PLAYABLE_ORDER.indexOf(round);
   if (idx <= 0) return null;
   return PLAYABLE_ORDER[idx - 1];
@@ -170,9 +174,10 @@ export function latestSettledRound(
 export function describeNext(round: Round, phase: Phase): string {
   if (round === "ended") return "게임이 종료되었습니다";
   if (round === "final") {
+    if (phase === "idle") return "최종 팀 매칭 · 지망 제출";
     if (phase === "preference") return "최종 팀 매칭 결과 발표";
     if (phase === "final-result") return "게임 종료";
-    return "최종 팀 매칭 · 지망 제출";
+    return "최종 팀 매칭 · 결과 발표";
   }
   if (phase === "idle") return `${ROUND_LABELS[round]} · 주식 단계 시작`;
   if (phase === "stock") return `${ROUND_LABELS[round]} · 결과 발표 (수익률 공식 정산)`;
@@ -180,7 +185,7 @@ export function describeNext(round: Round, phase: Phase): string {
   if (phase === "matching") {
     const idx = PLAYABLE_ORDER.indexOf(round);
     if (idx < 0 || idx >= PLAYABLE_ORDER.length - 1) {
-      return "최종 팀 매칭 · 지망 제출";
+      return "최종 팀 매칭 · 결과 발표";
     }
     return `${ROUND_LABELS[PLAYABLE_ORDER[idx + 1]]} 라운드 · 대기`;
   }

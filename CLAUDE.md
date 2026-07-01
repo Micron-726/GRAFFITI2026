@@ -89,7 +89,7 @@
 | `game_state` | id PK(=1), current_round, current_phase, **team_count**, **avg_initial_seed**, **matching_top_n** | 싱글톤. team_count/avg_initial_seed 는 수익률 공식에 사용, matching_top_n 은 매칭권 자동 정산 시 회사별 가격→개수→낮은 seed 순 상위 N 팀만 확정. 모두 admin UI 에서 수정 가능 |
 | `companies` | id SERIAL PK, name UNIQUE, min_order_price, **sort_order**, created_at | sort_order 로 드래그 순서 관리. UI 에선 ID 대신 "순번" (sort_order+1) 표시 |
 | `teams` | username PK, seed (CHECK >= 0), **display_seed** | seed 는 won 단위, 만원 배수 (앱이 강제). display_seed 는 stock/matching 단계 동안 디스플레이 화면에 박제되는 값 (NULL 이면 실시간 seed 사용) |
-| `tickets` | (team, company) PK, count | |
+| `tickets` | (team, company) PK, count, **display_count** | display_count 는 matching 단계 동안 다른 팀 화면에 박제될 count (NULL 이면 실시간) — 판매(opSellTickets) 로 count 가 즉시 감소해도 스냅샷은 유지됨 |
 | `investments` | (round, team, company) PK, amount | 정산 후에도 보존 (history) |
 | `round_results` | (round, company) PK, yield_pct | 정산 결과 |
 | `bids` | (team, company) PK, price, count | 한 팀 한 회사 = 한 가격. 정산·취소 시 삭제 |
@@ -104,7 +104,7 @@
 ```
 (seed, idle) → stock → results → matching →
 (series-a, idle) → ... → (series-c, matching) →
-(final, preference) → (final, final-result) → (ended, idle)
+(final, idle: 결과 발표 대기) → (final, preference) → (final, final-result) → (ended, idle)
 ```
 
 [lib/game.ts](lib/game.ts) `computeNextState`. admin 의 **"다음 단계로 넘어가기"** 버튼(맨 아래 오른쪽).
@@ -131,24 +131,29 @@ Series C 매칭 종료 후 진입.
   예: A팀 1지망 X (매칭권 0장), B팀 2지망 X (매칭권 30장) → A팀 우선 배정.
 - **Idempotent**: `final_matches` 에 결과 있으면 skip.
 
-## 수익률 공식 (양수 baseline + 비대칭 σ)
+## 수익률 공식 (양수 baseline + 2차 곡선 σ, v4)
 
 ```
 R(M, Z) = mean(M) + σ(M, Z) · Z,   Z ~ N(0,1) ∩ [-1, 1]
 
-mean(M)   = mean_min + (mean_max − mean_min) · k·M/(1+k·M)        ← 모든 M 에서 양수
-σ_up(M)   = sigma_up                                              (상수, Z ≥ 0)
-σ_down(M) = sigma_down_max − (sigma_down_max − sigma_down_min) · k·M/(1+k·M)  (Z < 0)
+factorDown  = k·M / (1 + k·M)         ← M=0 일 때 0, M=∞ 일 때 1 (linear-in-M)
+factorDown² = factorDown 의 제곱      ← 2차 곡선. σ 감소가 M 커질수록 가팔라짐
+
+mean(M)   = mean_min + (mean_max − mean_min) · factorDown         (linear)
+σ_up(M)   = sigma_up_max − (sigma_up_max − sigma_up_min) · factorDown²   (곡선)
+σ_down(M) = sigma_down_max − (sigma_down_max − sigma_down_min) · factorDown²  (곡선)
 
 k = k_scale / (team_count × avg_initial_seed)    ← DB game_state 에서 읽음
 ```
 
-- 파라미터: [config/yield.ts](config/yield.ts) (`mean_min=10, mean_max=30, sigma_up=70, sigma_down_max=40, sigma_down_min=30, k_scale=10`)
-- team_count, avg_initial_seed 는 DB 에서 읽음 (admin UI 게임 설정 섹션에서 수정 가능). ★ 테스트 때 작은 값으로 바꿔야 공식이 의도대로 동작 (예: test 계정 2개로 1000만원 seed 면 team_count=2, avg_initial_seed=10000000).
-- M=0 극단 (저 M): 평균 +10%, 범위 [-30%, +80%]
-- M=∞ 극단 (고 M): 평균 +30%, 범위 [0%, +100%]
-- 예시 (20팀·평균 1000만원): M=10% (2000만원) → 평균 ~15% / 저점 ~−20% / 고점 ~+85%. M=50% → 평균 ~23% / 저점 ~−10% / 고점 ~+93%.
-- 모든 M 에서 평균 양수 → 한 라운드만 잘못 베팅해도 게임이 안 끝나는 디자인. 이전 공식이 너무 마이너스 잦아서 전면 재설계.
+- 파라미터: [config/yield.ts](config/yield.ts) (`mean_min=15, mean_max=25, sigma_up_max=45, sigma_up_min=15, sigma_down_max=25, sigma_down_min=15, k_scale=30`)
+- team_count, avg_initial_seed 는 DB 에서 읽음 (admin UI 게임 설정 섹션에서 수정 가능). ★ 테스트 때 작은 값으로 바꿔야 공식이 의도대로 동작.
+- **k_scale=30**: 20팀·7회사 실전에서 M 은 대개 5~30% → factorDown 0.6~0.9 로 이미 saturation 근처. M=30%+ 는 사실상 M=∞ 취급.
+- **σ 곡선**: `factorDown²` 를 σ 계수에 태워서 저 M(비인기, M<2%) 에서는 σ 유지 (도박성), M 커질수록 감소 폭 가팔라짐 → 인기 회사는 σ 확 압축.
+- M=0 극단: 평균 +15%, σ_up=45, σ_down=25, 범위 [-10%, +60%]
+- M=∞ 극단: 평균 +25%, σ_up=15, σ_down=15, 범위 [+10%, +40%]
+- **실 게임 구간** (20팀·평균 10000만원 기준): M=5% → [-0.4, +55.2]. M=10% → [+3.1, +50.6]. M=20% → [+5.9, +46.5]. M=30% → [+7.1, +44.7]. 실 상한(30%) 에서 완전 양수 + σ 좁음.
+- **균형**: 고점 diff = 저점 diff = 20%p (양쪽 대칭). Δmean=10, Δσ_up=30, Δσ_down=10.
 - 구현: [lib/game.ts](lib/game.ts) `computeYieldPct(M, teamCount, avgInitialSeed)`. `settleStockRound` 가 game_state 에서 두 값을 읽고 회사별 SUM 후 호출 → 만원 단위 내림 적용.
 
 ## 라운드별 매칭권 최소 주문 금액 하한

@@ -81,12 +81,17 @@ const statements = [
 
   `ALTER TABLE teams ADD COLUMN IF NOT EXISTS display_seed INTEGER`,
 
+  // display_count: matching 단계 진입 시 count 를 박제 → 다른 팀의 매칭권 판매가
+  // 그 즉시 표에 반영되지 않도록. NULL 이면 실시간 count 사용.
   `CREATE TABLE IF NOT EXISTS tickets (
      team_username TEXT NOT NULL REFERENCES teams(username) ON DELETE CASCADE,
      company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
      count INTEGER NOT NULL DEFAULT 0 CHECK (count >= 0),
+     display_count INTEGER,
      PRIMARY KEY (team_username, company_id)
    )`,
+
+  `ALTER TABLE tickets ADD COLUMN IF NOT EXISTS display_count INTEGER`,
 
   // 라운드별 투자 내역. 정산 후에도 삭제하지 않고 history 로 남김.
   `CREATE TABLE IF NOT EXISTS investments (

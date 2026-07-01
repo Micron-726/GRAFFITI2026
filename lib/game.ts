@@ -45,7 +45,8 @@ function computeYieldPct(
   const {
     mean_min,
     mean_max,
-    sigma_up,
+    sigma_up_max,
+    sigma_up_min,
     sigma_down_max,
     sigma_down_min,
     k_scale,
@@ -55,15 +56,17 @@ function computeYieldPct(
   const k = k_scale / totalMoney;
   const kM = k * (Number(M) || 0);
 
-  const factorDown = kM / (1 + kM); // M=0 → 0, M=∞ → 1
+  const factorDown = kM / (1 + kM); // M=0 → 0, M=∞ → 1 (linear-in-M 스케일)
+  const factorDownSq = factorDown * factorDown; // 2차 곡선. σ 를 여기에 태워서 저 M 에선 σ 유지, 고 M 에서 급감.
 
-  // 평균: M 클수록 mean_max 로 수렴, 작을수록 mean_min. 모두 양수.
+  // 평균: linear — M 클수록 mean_max 로 수렴. 모두 양수.
   const mean = mean_min + (mean_max - mean_min) * factorDown;
-  // 상방 변동은 상수. 인기·비인기 무관하게 최고점 (mean + sigma_up) 이 매력적.
-  const sigmaUp = sigma_up;
-  // 하방 변동은 M 클수록 축소 → 인기 회사는 손실 폭이 작음.
+  // 상방·하방 변동: factorDown² 로 곡선 감소 → 저 M(비인기) 에선 σ 크게 유지,
+  // M 커질수록 감소 폭이 가팔라져 인기 회사는 확 압축됨.
+  const sigmaUp =
+    sigma_up_max - (sigma_up_max - sigma_up_min) * factorDownSq;
   const sigmaDown =
-    sigma_down_max - (sigma_down_max - sigma_down_min) * factorDown;
+    sigma_down_max - (sigma_down_max - sigma_down_min) * factorDownSq;
 
   const Z = sampleTruncatedNormal();
   const sigma = Z >= 0 ? sigmaUp : sigmaDown;
@@ -99,16 +102,20 @@ export async function readGameState(): Promise<GameStateRow> {
 
 // 다음 단계 계산:
 //   (seed, idle) → stock → results → matching → (series-a, idle) → ...
-//   (series-c, matching) → (final, preference) → (final, final-result) → (ended, idle)
+//   (series-c, matching) → (final, idle: 결과 발표 대기)
+//                       → (final, preference: 지망 제출)
+//                       → (final, final-result: 자동 매칭 결과)
+//                       → (ended, idle)
 export function computeNextState(
   round: string,
   phase: string,
 ): { round: string; phase: string } {
   if (round === "ended") return { round, phase };
   if (round === "final") {
+    if (phase === "idle") return { round: "final", phase: "preference" };
     if (phase === "preference") return { round: "final", phase: "final-result" };
     if (phase === "final-result") return { round: "ended", phase: "idle" };
-    return { round: "final", phase: "preference" };
+    return { round: "final", phase: "idle" };
   }
   if (phase === "idle") return { round, phase: "stock" };
   if (phase === "stock") return { round, phase: "results" };
@@ -116,8 +123,8 @@ export function computeNextState(
   if (phase === "matching") {
     const idx = (ROUND_ORDER as readonly string[]).indexOf(round);
     if (idx < 0 || idx >= ROUND_ORDER.length - 1) {
-      // series-c 매칭 종료 → 최종 팀 매칭 진입
-      return { round: "final", phase: "preference" };
+      // series-c 매칭 종료 → 최종 팀 매칭 라운드의 idle (결과 발표 대기)
+      return { round: "final", phase: "idle" };
     }
     return { round: ROUND_ORDER[idx + 1], phase: "idle" };
   }
@@ -465,6 +472,7 @@ export async function opResetGame(): Promise<void> {
   await sql`DELETE FROM tickets`;
   await sql`DELETE FROM preferences`;
   await sql`DELETE FROM final_matches`;
+  // tickets 이미 삭제되었으므로 display_count 도 자연히 없음
   await sql`UPDATE teams SET seed = ${avg_initial_seed}, display_seed = NULL`;
   // 매칭권 자동정산이 덮어쓴 min_order_price 를 admin 이 마지막에 설정한 초기값으로 복구.
   // 동시에 seed 라운드의 floor 도 강제 (initial 이 floor 보다 낮으면 floor 로 끌어올림).
@@ -485,6 +493,16 @@ export async function freezeTeamSnapshot(): Promise<void> {
 
 export async function clearTeamSnapshot(): Promise<void> {
   await sql`UPDATE teams SET display_seed = NULL`;
+}
+
+// 매칭권 개수 스냅샷. matching 단계 동안 판매(opSellTickets) 로 count 가 즉시 감소해도
+// 다른 팀 화면에서는 스냅샷을 보여줌. 결과 발표 대기 단계에서 clear 해서 실 count + (-N) delta 표시.
+export async function freezeTicketSnapshot(): Promise<void> {
+  await sql`UPDATE tickets SET display_count = count`;
+}
+
+export async function clearTicketSnapshot(): Promise<void> {
+  await sql`UPDATE tickets SET display_count = NULL`;
 }
 
 // 매칭권 자발적 판매: 현재 최소 주문 금액 × 개수 의 80% 환불 (만원 내림)

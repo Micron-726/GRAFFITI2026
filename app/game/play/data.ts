@@ -33,7 +33,7 @@ export async function fetchGameData(
     sql`SELECT current_round, current_phase, team_count, avg_initial_seed, matching_top_n FROM game_state WHERE id = 1`,
     sql`SELECT id, name, min_order_price, sort_order, max_slots FROM companies ORDER BY sort_order, id`,
     sql`SELECT username, seed, display_seed FROM teams ORDER BY username`,
-    sql`SELECT team_username, company_id, count FROM tickets`,
+    sql`SELECT team_username, company_id, count, display_count FROM tickets`,
     sql`SELECT round, team_username, company_id, amount FROM investments`,
     sql`SELECT round, company_id, yield_pct FROM round_results`,
   ]);
@@ -142,6 +142,10 @@ export async function fetchGameData(
       ...t,
       company_id: Number(t.company_id),
       count: Number(t.count),
+      display_count:
+        t.display_count === null || t.display_count === undefined
+          ? null
+          : Number(t.display_count),
     })),
     investments: (investmentRows as Investment[]).map((i) => ({
       ...i,
