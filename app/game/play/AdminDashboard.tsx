@@ -140,6 +140,19 @@ export function AdminDashboard({ data }: { data: GameData }) {
         state={state}
         run={run}
       />
+
+      {/* 지망 제출 단계일 때는 지망 현황을 회사·팀 섹션보다 위로 끌어올려서 눈에 잘 띄게. */}
+      {state.current_round === "final" && phase === "preference" && (
+        <FinalMatchingAdminSection
+          companies={data.companies}
+          teams={data.teams}
+          preferences={data.preferences}
+          finalMatches={data.finalMatches}
+          tickets={data.tickets}
+          currentPhase={state.current_phase}
+        />
+      )}
+
       <CompaniesSection companies={data.companies} run={run} />
       <TeamsSection
         teams={data.teams}
@@ -170,7 +183,8 @@ export function AdminDashboard({ data }: { data: GameData }) {
         />
       )}
 
-      {state.current_round === "final" && (
+      {/* final 라운드의 다른 phase (idle / final-result / ended) 는 아래쪽에 표시. */}
+      {state.current_round === "final" && phase !== "preference" && (
         <FinalMatchingAdminSection
           companies={data.companies}
           teams={data.teams}
@@ -1469,8 +1483,27 @@ function FinalMatchingAdminSection({
   }
   const submittedTeams = new Set(preferences.map((p) => p.team_username));
 
+  // 회사별 지망 순위별 그룹: byCompanyRank[companyId][rank] = [팀,...]
+  const byCompanyRank = new Map<number, Map<number, string[]>>();
+  for (const p of preferences) {
+    if (!byCompanyRank.has(p.company_id)) {
+      byCompanyRank.set(p.company_id, new Map());
+    }
+    const rankMap = byCompanyRank.get(p.company_id)!;
+    const list = rankMap.get(p.rank) ?? [];
+    list.push(p.team_username);
+    rankMap.set(p.rank, list);
+  }
+
+  // 최대 지망 순위 (표 컬럼 개수 산정용)
+  const maxRank = preferences.reduce((m, p) => Math.max(m, p.rank), 0);
+
+  // 지망 데이터가 하나라도 있으면 preference 단계 이후에도 계속 표시
+  const showPreferenceStatus =
+    currentPhase === "preference" || preferences.length > 0;
+
   return (
-    <section className="mb-6 p-4 border border-gray-300 rounded">
+    <section className="mb-6 p-4 border-2 border-indigo-400 bg-indigo-50 rounded">
       <h2 className="text-lg font-bold mb-1">최종 팀 매칭 · Admin 뷰</h2>
       <p className="text-xs text-gray-600 mb-3">
         회사별 슬롯은 위 &quot;회사&quot; 섹션의 <strong>최종 매칭 슬롯</strong>{" "}
@@ -1478,51 +1511,165 @@ function FinalMatchingAdminSection({
         &quot;매칭 결과&quot; 단계에서는 아래 표로 배정 결과가 보임.
       </p>
 
-      {currentPhase === "preference" && (
-        <div className="mb-4">
-          <h3 className="text-sm font-semibold mb-2">
-            지망 제출 현황 ({submittedTeams.size}/{teams.length}팀)
-          </h3>
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-gray-200 text-left">
-                  <th className="py-1 px-2">팀</th>
-                  <th className="py-1 px-2">매칭권</th>
-                  <th className="py-1 px-2">시드</th>
-                  {companies.map((c) => (
-                    <th key={c.id} className="py-1 px-2 text-center">
-                      {c.name}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {teams.map((t) => (
-                  <tr key={t.username} className="border-b border-gray-100">
-                    <td className="py-1 px-2 font-mono">{t.username}</td>
-                    <td className="py-1 px-2">
-                      {ticketsByTeam.get(t.username) ?? 0}
-                    </td>
-                    <td className="py-1 px-2">{formatManwon(t.seed)}</td>
-                    {companies.map((c) => {
-                      const r = prefByTeamCompany.get(
-                        `${t.username}:${c.id}`,
-                      );
-                      return (
-                        <td
-                          key={c.id}
-                          className="py-1 px-2 text-center tabular-nums"
-                        >
-                          {r ? `${r}지망` : "-"}
+      {showPreferenceStatus && (
+        <div className="mb-4 space-y-4">
+          {/* 팀별 지망 현황 (팀 x 회사) */}
+          <div>
+            <h3 className="text-sm font-semibold mb-2">
+              팀별 지망 현황 ({submittedTeams.size}/{teams.length}팀 제출)
+            </h3>
+            <div className="overflow-x-auto rounded border border-indigo-200 bg-white">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-gray-200 text-left bg-indigo-100/60">
+                    <th className="py-1 px-2">팀</th>
+                    <th className="py-1 px-2 text-right">매칭권</th>
+                    <th className="py-1 px-2 text-right">시드</th>
+                    <th className="py-1 px-2 text-center">상태</th>
+                    {companies.map((c) => (
+                      <th key={c.id} className="py-1 px-2 text-center">
+                        {c.name}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {teams.map((t) => {
+                    const submitted = submittedTeams.has(t.username);
+                    return (
+                      <tr
+                        key={t.username}
+                        className={
+                          "border-b border-gray-100 " +
+                          (submitted ? "" : "bg-red-50")
+                        }
+                      >
+                        <td className="py-1 px-2 font-mono">{t.username}</td>
+                        <td className="py-1 px-2 text-right tabular-nums">
+                          {ticketsByTeam.get(t.username) ?? 0}
                         </td>
+                        <td className="py-1 px-2 text-right tabular-nums">
+                          {formatManwon(t.seed)}
+                        </td>
+                        <td className="py-1 px-2 text-center">
+                          {submitted ? (
+                            <span className="inline-block rounded bg-green-100 px-2 py-0.5 text-xs font-semibold text-green-800">
+                              제출
+                            </span>
+                          ) : (
+                            <span className="inline-block rounded bg-red-200 px-2 py-0.5 text-xs font-bold text-red-900">
+                              미제출
+                            </span>
+                          )}
+                        </td>
+                        {companies.map((c) => {
+                          const r = prefByTeamCompany.get(
+                            `${t.username}:${c.id}`,
+                          );
+                          return (
+                            <td
+                              key={c.id}
+                              className="py-1 px-2 text-center tabular-nums"
+                            >
+                              {r ? (
+                                <span
+                                  className={
+                                    r === 1
+                                      ? "font-bold text-indigo-800"
+                                      : r === 2
+                                        ? "font-semibold text-indigo-600"
+                                        : "text-gray-700"
+                                  }
+                                >
+                                  {r}지망
+                                </span>
+                              ) : (
+                                <span className="text-gray-300">-</span>
+                              )}
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* 회사별 지망 그룹 (회사가 얼마나 인기 있는지 한눈에) */}
+          {maxRank > 0 && (
+            <div>
+              <h3 className="text-sm font-semibold mb-2">
+                회사별 지망 그룹 (몇 명이 각 회사를 몇 지망으로 뒀는지)
+              </h3>
+              <div className="overflow-x-auto rounded border border-indigo-200 bg-white">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-gray-200 text-left bg-indigo-100/60">
+                      <th className="py-1 px-2">회사</th>
+                      <th className="py-1 px-2 text-right">슬롯</th>
+                      {Array.from({ length: maxRank }, (_, i) => (
+                        <th
+                          key={i}
+                          className="py-1 px-2 text-left"
+                        >
+                          {i + 1}지망
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {companies.map((c) => {
+                      const rankMap = byCompanyRank.get(c.id);
+                      return (
+                        <tr key={c.id} className="border-b border-gray-100">
+                          <td className="py-1 px-2 font-semibold">{c.name}</td>
+                          <td className="py-1 px-2 text-right tabular-nums">
+                            {c.max_slots}
+                          </td>
+                          {Array.from({ length: maxRank }, (_, i) => {
+                            const list = rankMap?.get(i + 1) ?? [];
+                            const overflow =
+                              i === 0 && list.length > c.max_slots;
+                            return (
+                              <td
+                                key={i}
+                                className="py-1 px-2 align-top"
+                              >
+                                <div className="flex flex-wrap items-center gap-1">
+                                  <span
+                                    className={
+                                      "inline-block rounded px-1.5 py-0.5 text-xs font-bold tabular-nums " +
+                                      (list.length === 0
+                                        ? "bg-gray-100 text-gray-400"
+                                        : overflow
+                                          ? "bg-orange-200 text-orange-900"
+                                          : "bg-indigo-100 text-indigo-800")
+                                    }
+                                  >
+                                    {list.length}
+                                  </span>
+                                  {list.length > 0 && (
+                                    <span className="text-xs font-mono text-gray-700">
+                                      {list.join(", ")}
+                                    </span>
+                                  )}
+                                </div>
+                              </td>
+                            );
+                          })}
+                        </tr>
                       );
                     })}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                  </tbody>
+                </table>
+              </div>
+              <p className="text-xs text-gray-500 mt-1">
+                1지망 개수가 슬롯을 초과하는 회사는 <span className="rounded bg-orange-200 px-1 font-bold text-orange-900">주황색</span>으로 표시 — 밀려나는 팀 발생 예상.
+              </p>
+            </div>
+          )}
         </div>
       )}
 
