@@ -113,7 +113,7 @@ export async function playerSellTickets(
     if (state.current_phase !== "matching") {
       throw new Error("지금은 매칭권을 팔 수 있는 단계가 아닙니다");
     }
-    await opSellTickets(username, companyId, count);
+    await opSellTickets(state.current_round, username, companyId, count);
     refresh();
   });
 }

@@ -106,7 +106,7 @@ export async function advanceToNextPhase(): Promise<ActionResult> {
       await settleStockRound(current_round);
     }
     if (current_phase === "matching") {
-      await autoResolveMatchingPhase(matching_top_n);
+      await autoResolveMatchingPhase(current_round, matching_top_n);
     }
     const next = computeNextState(current_round, current_phase);
     await sql`
@@ -320,7 +320,8 @@ export async function awardBid(
   return guard(async () => {
     const u = assertString(username, "username");
     const c = assertInt(companyId, "companyId");
-    await opAwardBid(u, c);
+    const { current_round } = await readGameState();
+    await opAwardBid(current_round, u, c);
     refresh();
   });
 }
@@ -333,7 +334,8 @@ export async function refundFailedBid(
   return guard(async () => {
     const u = assertString(username, "username");
     const c = assertInt(companyId, "companyId");
-    await opRefundFailedBid(u, c);
+    const { current_round } = await readGameState();
+    await opRefundFailedBid(current_round, u, c);
     refresh();
   });
 }
@@ -348,7 +350,8 @@ export async function sellTickets(
     const u = assertString(username, "username");
     const c = assertInt(companyId, "companyId");
     const n = assertInt(count, "count", { min: 1 });
-    await opSellTickets(u, c, n);
+    const { current_round } = await readGameState();
+    await opSellTickets(current_round, u, c, n);
     refresh();
   });
 }

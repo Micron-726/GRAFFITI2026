@@ -8,10 +8,13 @@ import type {
   GameData,
   GameState,
   Investment,
+  MatchingResult,
   RoundResult,
   Team,
   Ticket,
+  TicketSale,
 } from "./types";
+import { compareUsernames } from "./types";
 
 export async function fetchGameData(
   isAdmin: boolean,
@@ -38,9 +41,39 @@ export async function fetchGameData(
     ? await sql`SELECT team_username, company_id, price, count FROM bids`
     : await sql`SELECT team_username, company_id, price, count FROM bids WHERE team_username = ${username}`;
 
-  const configuredUsernames = getAllUsernames().filter(
-    (u) => !isAdminUsername(u),
-  );
+  let matchingResultRows: MatchingResult[] = [];
+  try {
+    matchingResultRows = (await sql`
+      SELECT round, team_username, company_id, bid_price, bid_count, awarded_count, min_order_price
+      FROM matching_results
+    `) as MatchingResult[];
+  } catch (e) {
+    if (!(e instanceof Error) || !e.message.includes("matching_results")) {
+      throw e;
+    }
+  }
+
+  let ticketSaleRows: TicketSale[] = [];
+  try {
+    ticketSaleRows = isAdmin
+      ? ((await sql`
+          SELECT round, team_username, company_id, count, refund_amount, min_order_price
+          FROM ticket_sales
+        `) as TicketSale[])
+      : ((await sql`
+          SELECT round, team_username, company_id, count, refund_amount, min_order_price
+          FROM ticket_sales
+          WHERE team_username = ${username}
+        `) as TicketSale[]);
+  } catch (e) {
+    if (!(e instanceof Error) || !e.message.includes("ticket_sales")) {
+      throw e;
+    }
+  }
+
+  const configuredUsernames = getAllUsernames()
+    .filter((u) => !isAdminUsername(u))
+    .sort(compareUsernames);
 
   // Neon 이 INTEGER/NUMERIC 을 string 으로 줄 수 있는 케이스 방어
   const state = stateRows[0] as
@@ -67,10 +100,12 @@ export async function fetchGameData(
       min_order_price: Number(c.min_order_price),
       sort_order: Number(c.sort_order),
     })),
-    teams: (teamRows as Team[]).map((t) => ({
-      ...t,
-      seed: Number(t.seed),
-    })),
+    teams: (teamRows as Team[])
+      .map((t) => ({
+        ...t,
+        seed: Number(t.seed),
+      }))
+      .sort((a, b) => compareUsernames(a.username, b.username)),
     tickets: (ticketRows as Ticket[]).map((t) => ({
       ...t,
       company_id: Number(t.company_id),
@@ -91,6 +126,21 @@ export async function fetchGameData(
       company_id: Number(b.company_id),
       price: Number(b.price),
       count: Number(b.count),
+    })),
+    matchingResults: matchingResultRows.map((r) => ({
+      ...r,
+      company_id: Number(r.company_id),
+      bid_price: Number(r.bid_price),
+      bid_count: Number(r.bid_count),
+      awarded_count: Number(r.awarded_count),
+      min_order_price: Number(r.min_order_price),
+    })),
+    ticketSales: ticketSaleRows.map((s) => ({
+      ...s,
+      company_id: Number(s.company_id),
+      count: Number(s.count),
+      refund_amount: Number(s.refund_amount),
+      min_order_price: Number(s.min_order_price),
     })),
     configuredUsernames,
   };

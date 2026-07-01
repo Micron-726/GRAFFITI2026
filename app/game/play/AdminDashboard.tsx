@@ -35,7 +35,12 @@ import type {
   Team,
   Ticket,
 } from "./types";
-import { ROUND_LABELS, PHASE_LABELS, describeNext } from "./types";
+import {
+  ROUND_LABELS,
+  PHASE_LABELS,
+  compareUsernames,
+  describeNext,
+} from "./types";
 import { SettledResultsPanel, TicketHoldingsTable } from "./shared";
 import { formatManwon, manwonToWon, wonToManwon, MANWON } from "./format";
 
@@ -156,12 +161,14 @@ export function AdminDashboard({ data }: { data: GameData }) {
           companies={data.companies}
           bids={data.bids}
           tickets={data.tickets}
+          topN={state.matching_top_n}
           run={run}
         />
       )}
 
       <SettledResultsPanel
         companies={data.companies}
+        teams={data.teams}
         investments={data.investments}
         roundResults={data.roundResults}
       />
@@ -185,7 +192,7 @@ function AdvanceButton({ state, run }: { state: GameState; run: RunFn }) {
   const ended = state.current_round === "ended";
   const matchingNote =
     state.current_phase === "matching"
-      ? `\n(매칭권 자동 정산: 회사별 가격 상위 ${state.matching_top_n}팀 확정, 나머지 50% 환불)`
+      ? `\n(매칭권 자동 정산: 회사별 가격→개수→낮은 seed 순 상위 ${state.matching_top_n}팀 확정, 나머지 50% 환불)`
       : "";
   return (
     <div className="mt-8 flex justify-end items-center gap-3">
@@ -317,7 +324,7 @@ function GameConfigSection({ state, run }: { state: GameState; run: RunFn }) {
       <p className="text-xs text-gray-600 mb-3">
         팀 수·평균 시드는 수익률 공식의 k 산정에 사용 (k = k_scale / (팀 수 ×
         평균 시드)). 매칭권 상위 N 은 매칭권 단계 종료 시 자동 정산에서 회사별
-        상위 N 팀만 확정하고 나머지는 50% 환불.
+        가격→개수→낮은 seed 순 상위 N 팀만 확정하고 나머지는 50% 환불.
       </p>
       <div className="flex items-center gap-2 flex-wrap">
         <label className="flex items-center gap-1 text-sm">
@@ -969,12 +976,14 @@ function MatchingPhaseSection({
   companies,
   bids,
   tickets,
+  topN,
   run,
 }: {
   teams: Team[];
   companies: Company[];
   bids: Bid[];
   tickets: Ticket[];
+  topN: number;
   run: RunFn;
 }) {
   return (
@@ -1033,7 +1042,13 @@ function MatchingPhaseSection({
         )}
       </div>
 
-      <BidResolutionList bids={bids} companies={companies} run={run} />
+      <BidResolutionList
+        bids={bids}
+        companies={companies}
+        teams={teams}
+        topN={topN}
+        run={run}
+      />
 
       <TicketSellForm
         teams={teams}
@@ -1113,26 +1128,40 @@ function BidCell({
 function BidResolutionList({
   bids,
   companies,
+  teams,
+  topN,
   run,
 }: {
   bids: Bid[];
   companies: Company[];
+  teams: Team[];
+  topN: number;
   run: RunFn;
 }) {
   if (bids.length === 0) return null;
 
-  const grouped: Record<number, Bid[]> = {};
+  const seedByTeam = new Map(teams.map((team) => [team.username, team.seed]));
+  const grouped: Record<number, BidResolutionRow[]> = {};
   for (const b of bids) {
     if (!grouped[b.company_id]) grouped[b.company_id] = [];
-    grouped[b.company_id].push(b);
+    grouped[b.company_id].push({
+      ...b,
+      seed: seedByTeam.get(b.team_username) ?? 0,
+      isWinner: false,
+      isRandomBoundary: false,
+    });
   }
   for (const k of Object.keys(grouped)) {
-    grouped[Number(k)].sort((a, b) => b.price - a.price);
+    const rows = grouped[Number(k)];
+    rows.sort(compareBidResolutionRows);
+    markBidResolutionRows(rows, topN);
   }
 
   return (
     <div className="mt-4 p-3 bg-white border border-gray-300 rounded">
-      <h3 className="font-bold mb-2">입찰 정산 (회사별 가격 내림차순)</h3>
+      <h3 className="font-bold mb-2">
+        입찰 정산 (가격 → 개수 → 낮은 seed 순)
+      </h3>
       {companies
         .filter((c) => grouped[c.id]?.length > 0)
         .map((c) => (
@@ -1146,6 +1175,7 @@ function BidResolutionList({
                   <th className="py-1 text-right">가격</th>
                   <th className="py-1 text-right">개수</th>
                   <th className="py-1 text-right">합계</th>
+                  <th className="py-1 text-right">seed</th>
                   <th className="py-1 w-44">작업</th>
                 </tr>
               </thead>
@@ -1154,7 +1184,7 @@ function BidResolutionList({
                   <tr
                     key={`${b.team_username}-${b.company_id}`}
                     className={
-                      idx < 2
+                      b.isWinner
                         ? "border-b border-gray-100 bg-green-100"
                         : "border-b border-gray-100"
                     }
@@ -1168,28 +1198,39 @@ function BidResolutionList({
                     <td className="py-1 text-right">
                       {formatManwon(b.price * b.count)}
                     </td>
+                    <td className="py-1 text-right">
+                      {formatManwon(b.seed)}
+                    </td>
                     <td className="py-1">
-                      <div className="flex gap-1">
-                        <button
-                          type="button"
-                          onClick={() =>
-                            run(() => awardBid(b.team_username, b.company_id))
-                          }
-                          className="px-2 py-1 bg-green-200 rounded text-xs"
-                        >
-                          확정
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() =>
-                            run(() =>
-                              refundFailedBid(b.team_username, b.company_id),
-                            )
-                          }
-                          className="px-2 py-1 bg-yellow-200 rounded text-xs"
-                        >
-                          50% 환불
-                        </button>
+                      <div className="flex flex-wrap items-center gap-1">
+                        {b.isWinner ? (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              run(() => awardBid(b.team_username, b.company_id))
+                            }
+                            className="px-2 py-1 bg-green-200 rounded text-xs"
+                          >
+                            확정
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              run(() =>
+                                refundFailedBid(b.team_username, b.company_id),
+                              )
+                            }
+                            className="px-2 py-1 bg-yellow-200 rounded text-xs"
+                          >
+                            50% 환불
+                          </button>
+                        )}
+                        {b.isRandomBoundary && (
+                          <span className="rounded bg-purple-100 px-2 py-1 text-xs font-bold text-purple-800">
+                            랜덤
+                          </span>
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -1199,11 +1240,55 @@ function BidResolutionList({
           </div>
         ))}
       <p className="text-xs text-gray-500 mt-2">
-        상위 2개는 초록 배경. "확정" 은 입찰 개수를 매칭권으로 전환(추가 환불
-        없음), "50% 환불" 은 패자 처리 (가격×개수의 50% 환불 + 입찰 삭제).
+        상위 {topN}팀은 초록 배경. 같은 가격이면 입찰 개수 많은 팀, 그래도
+        같으면 seed 가 적은 팀이 우선입니다. 그래도 상위 {topN}팀 경계가
+        갈리지 않으면 실제 자동 정산에서 랜덤으로 결정됩니다.
       </p>
     </div>
   );
+}
+
+type BidResolutionRow = Bid & {
+  seed: number;
+  isWinner: boolean;
+  isRandomBoundary: boolean;
+};
+
+function compareBidResolutionRows(a: BidResolutionRow, b: BidResolutionRow) {
+  if (b.price !== a.price) return b.price - a.price;
+  if (b.count !== a.count) return b.count - a.count;
+  if (a.seed !== b.seed) return a.seed - b.seed;
+  return compareUsernames(a.team_username, b.team_username);
+}
+
+function markBidResolutionRows(rows: BidResolutionRow[], topN: number) {
+  const winnerCount = Math.max(0, Math.min(topN, rows.length));
+  for (let i = 0; i < rows.length; i++) {
+    rows[i].isWinner = i < winnerCount;
+    rows[i].isRandomBoundary = false;
+  }
+  if (winnerCount <= 0 || winnerCount >= rows.length) return;
+
+  let start = winnerCount - 1;
+  let end = winnerCount - 1;
+  while (start > 0 && hasSameRandomPriority(rows[start - 1], rows[start])) {
+    start -= 1;
+  }
+  while (
+    end < rows.length - 1 &&
+    hasSameRandomPriority(rows[end], rows[end + 1])
+  ) {
+    end += 1;
+  }
+  if (start < winnerCount && end >= winnerCount) {
+    for (let i = start; i <= end; i++) {
+      rows[i].isRandomBoundary = true;
+    }
+  }
+}
+
+function hasSameRandomPriority(a: BidResolutionRow, b: BidResolutionRow) {
+  return a.price === b.price && a.count === b.count && a.seed === b.seed;
 }
 
 function TicketSellForm({

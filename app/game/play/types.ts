@@ -53,6 +53,25 @@ export type Bid = {
   count: number;
 };
 
+export type MatchingResult = {
+  round: Round;
+  team_username: string;
+  company_id: number;
+  bid_price: number;
+  bid_count: number;
+  awarded_count: number;
+  min_order_price: number;
+};
+
+export type TicketSale = {
+  round: Round;
+  team_username: string;
+  company_id: number;
+  count: number;
+  refund_amount: number;
+  min_order_price: number;
+};
+
 export type GameData = {
   state: GameState | undefined;
   companies: Company[];
@@ -61,6 +80,8 @@ export type GameData = {
   investments: Investment[];
   roundResults: RoundResult[];
   bids: Bid[];
+  matchingResults: MatchingResult[];
+  ticketSales: TicketSale[];
   /** 인증 env 에 등록된, admin 이 아닌 사용자 목록 */
   configuredUsernames: string[];
 };
@@ -80,7 +101,23 @@ export const PHASE_LABELS: Record<Phase, string> = {
   matching: "매칭권 단계",
 };
 
+const USERNAME_COLLATOR = new Intl.Collator("en", {
+  numeric: true,
+  sensitivity: "base",
+});
+
+export function compareUsernames(a: string, b: string): number {
+  return USERNAME_COLLATOR.compare(a, b);
+}
+
 const PLAYABLE_ORDER: Round[] = ["seed", "series-a", "series-b", "series-c"];
+
+export function previousPlayableRound(round: Round): Round | null {
+  if (round === "ended") return PLAYABLE_ORDER[PLAYABLE_ORDER.length - 1];
+  const idx = PLAYABLE_ORDER.indexOf(round);
+  if (idx <= 0) return null;
+  return PLAYABLE_ORDER[idx - 1];
+}
 
 /** round_results 중 가장 마지막에 정산된 라운드 */
 export function latestSettledRound(

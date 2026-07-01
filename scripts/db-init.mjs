@@ -88,6 +88,32 @@ const statements = [
      count INTEGER NOT NULL CHECK (count > 0),
      PRIMARY KEY (team_username, company_id)
    )`,
+
+  // 매칭권 입찰 정산 이력. bids 는 정산 후 삭제되므로, 대기 단계에서 이전 라운드
+  // 성공 개수/입찰 개수와 당시 최소 주문 금액을 보여주기 위해 별도 보존.
+  `CREATE TABLE IF NOT EXISTS matching_results (
+     round TEXT NOT NULL,
+     team_username TEXT NOT NULL REFERENCES teams(username) ON DELETE CASCADE,
+     company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+     bid_price INTEGER NOT NULL CHECK (bid_price >= 0),
+     bid_count INTEGER NOT NULL CHECK (bid_count >= 0),
+     awarded_count INTEGER NOT NULL CHECK (awarded_count >= 0),
+     min_order_price INTEGER NOT NULL CHECK (min_order_price >= 0),
+     resolved_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+     PRIMARY KEY (round, team_username, company_id)
+   )`,
+
+  // 매칭권 자발 판매 이력. 대기 단계에서 각 팀의 환급 금액을 보여주기 위해 보존.
+  `CREATE TABLE IF NOT EXISTS ticket_sales (
+     round TEXT NOT NULL,
+     team_username TEXT NOT NULL REFERENCES teams(username) ON DELETE CASCADE,
+     company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+     count INTEGER NOT NULL CHECK (count >= 0),
+     refund_amount INTEGER NOT NULL CHECK (refund_amount >= 0),
+     min_order_price INTEGER NOT NULL CHECK (min_order_price >= 0),
+     sold_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+     PRIMARY KEY (round, team_username, company_id)
+   )`,
 ];
 
 for (const stmt of statements) {
