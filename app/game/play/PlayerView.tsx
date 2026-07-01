@@ -971,7 +971,7 @@ function PreferenceSection({
         <p className="muted-label mt-1">
           각 회사에 <strong>1지망 ~ {maxRank}지망</strong> 중 하나를 선택하세요.
           같은 지망 번호는 한 회사에만 걸 수 있습니다.
-          제출 완료 후 admin 이 매칭 실행 → 지망 순서 &gt; 매칭권 개수 &gt; 시드 순서로 배정됩니다.
+          제출 완료 후 admin 이 매칭 실행 → 지망 순위 &gt; 매칭권 개수 많은 팀 &gt; 시드 많이 남은 팀 순으로 배정됩니다.
         </p>
       </div>
       <table className="table-modern">

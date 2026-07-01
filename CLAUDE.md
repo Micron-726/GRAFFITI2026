@@ -111,7 +111,7 @@
 - **stock → results** 전이 시 `settleStockRound` 자동 수익률 정산
 - **matching → next round** 전이 시 `autoResolveMatchingPhase(round, matching_top_n, nextRoundFloor)` 자동 매칭권 정산 (회사별 높은 가격 → 많은 개수 → 낮은 seed 순 상위 N 팀 확정, 그래도 같으면 랜덤, 나머지 80% 환불, `min_order_price = max(floor, 승자 최저가)`)
 - **series-c matching → final preference** 전이 (참가자 지망 제출 단계 진입)
-- **final preference → final-result** 전이 시 `computeFinalMatching()` 자동 실행 (지망 순위 > 매칭권 개수 DESC > seed ASC > random 순으로 배정)
+- **final preference → final-result** 전이 시 `computeFinalMatching()` 자동 실행 (지망 순위 > 매칭권 개수 DESC > seed DESC (많이 남은 팀 우선) > random 순으로 배정)
 - **final-result → ended idle** 전이 시 게임 종료
 
 > 게임 상태 섹션의 라운드/페이즈 직접 변경 박스는 escape hatch — 자동 정산·매칭 모두 skip.
@@ -125,8 +125,9 @@ Series C 매칭 종료 후 진입.
   ```
   for rank in 1..N:
     unmatched 팀들의 rank 지망 후보 → 회사별로 그룹핑
-    회사별 남은 슬롯만큼 [tickets DESC, seed ASC, RANDOM()] 순으로 배정
+    회사별 남은 슬롯만큼 [tickets DESC, seed DESC, RANDOM()] 순으로 배정
   ```
+  ※ 매칭권 구매 정산 (`autoResolveMatchingPhase`) 은 `seed ASC` (적은 팀 우선) 이지만, 최종 팀 매칭은 반대로 **seed DESC** (많이 남은 팀 우선) — 매칭권 구매 때 시드 적어서 유리했던 팀 유리 편중을 상쇄.
 - **핵심**: 지망 순위가 매칭권/시드보다 강한 우선순위.
   예: A팀 1지망 X (매칭권 0장), B팀 2지망 X (매칭권 30장) → A팀 우선 배정.
 - **Idempotent**: `final_matches` 에 결과 있으면 skip.

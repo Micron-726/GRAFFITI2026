@@ -580,7 +580,8 @@ async function recordTicketSale(
 // 배정 알고리즘:
 //   for rank in 1..N:
 //     unmatched 팀들의 rank 지망 회사 별로 후보 그룹핑
-//     회사별 남은 슬롯만큼 [tickets DESC, seed ASC, RANDOM()] 순으로 배정
+//     회사별 남은 슬롯만큼 [tickets DESC, seed DESC, RANDOM()] 순으로 배정
+//     ※ 매칭권 구매 정산은 seed ASC (적은 팀 우선) 이지만, 여긴 seed DESC (많이 남은 팀 우선).
 // 지망 순위가 매칭권/시드보다 강한 우선순위 (예: 1지망 0장 팀 > 2지망 30장 팀).
 
 export async function opSetPreference(
@@ -644,7 +645,8 @@ export async function computeFinalMatching(): Promise<void> {
 
   for (let rank = 1; rank <= maxRank; rank++) {
     // rank 지망 후보를 회사별로 그룹핑 (아직 unmatched 팀만).
-    // 우선순위: 매칭권 개수 DESC → seed ASC → RANDOM()
+    // 우선순위: 매칭권 개수 DESC → seed DESC (많이 남은 팀 우선) → RANDOM()
+    // ※ 매칭권 구매 정산은 seed ASC (적은 팀 우선) 이지만, 최종 팀 매칭은 반대로 seed DESC.
     const candidates = (await sql`
       SELECT p.team_username, p.company_id,
              COALESCE(SUM(t.count), 0)::INT AS total_tickets,
@@ -654,7 +656,7 @@ export async function computeFinalMatching(): Promise<void> {
       LEFT JOIN tickets t ON t.team_username = p.team_username
       WHERE p.rank = ${rank}
       GROUP BY p.team_username, p.company_id, tm.seed
-      ORDER BY p.company_id, total_tickets DESC, seed ASC, RANDOM()
+      ORDER BY p.company_id, total_tickets DESC, seed DESC, RANDOM()
     `) as {
       team_username: string;
       company_id: number;
