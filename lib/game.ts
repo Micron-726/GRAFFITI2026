@@ -10,7 +10,8 @@ export const ROUND_ORDER = [
 ] as const;
 
 // 매칭권 자동정산 종료 시 다음 라운드의 min_order_price 는
-//   - 승자 2명 이상: 2등 승자 가격
+//   - 승자 3명 이상: 3등 승자 가격
+//   - 승자 2명: 2등 승자 가격
 //   - 승자 1명: 그 팀 가격
 //   - 승자 0명: 유지
 // 회사별 초기 min_order_price 는 admin 이 회사 등록 시 설정 (initial_min_order_price 로 백업).
@@ -407,7 +408,8 @@ async function recordMatchingResult(
 //   4. RANDOM()            (시드까지 같으면 무작위)
 // 상위 topN 팀은 매칭권 확정, 나머지는 80% 환불.
 // 다음 라운드 min_order_price 갱신:
-//   - 승자 2명 이상: 2등 승자의 가격 (2등이 다음 라운드 하한)
+//   - 승자 3명 이상: 3등 승자의 가격 (3등이 다음 라운드 하한)
+//   - 승자 2명: 2등 승자 가격
 //   - 승자 1명: 그 팀 가격
 //   - 승자 0명: 기존 값 유지
 export async function autoResolveMatchingPhase(
@@ -427,7 +429,7 @@ export async function autoResolveMatchingPhase(
       ORDER BY b.price DESC, b.count DESC, t.seed ASC, RANDOM()
     `) as { team_username: string; price: number; count: number; seed: number }[];
 
-    // price DESC 정렬이므로 winnerPrices[0] 이 1등, [1] 이 2등.
+    // price DESC 정렬이므로 winnerPrices[0] 이 1등, [1] 이 2등, [2] 가 3등.
     const winnerPrices: number[] = [];
     for (let i = 0; i < bids.length; i++) {
       const b = bids[i];
@@ -440,13 +442,14 @@ export async function autoResolveMatchingPhase(
     }
 
     // 다음 라운드 min_order_price 갱신
-    // - 승자 2명 이상: 2등 승자 가격
+    // - 승자 3명 이상: 3등 승자 가격
+    // - 승자 2명: 2등 승자 가격
     // - 승자 1명: 1등 (= 그 팀) 가격
     // - 승자 0명: 유지
-    if (winnerPrices.length >= 2) {
-      await sql`UPDATE companies SET min_order_price = ${winnerPrices[1]} WHERE id = ${c.id}`;
-    } else if (winnerPrices.length === 1) {
-      await sql`UPDATE companies SET min_order_price = ${winnerPrices[0]} WHERE id = ${c.id}`;
+    const nextMinOrderPrice =
+      winnerPrices[2] ?? winnerPrices[1] ?? winnerPrices[0];
+    if (nextMinOrderPrice !== undefined) {
+      await sql`UPDATE companies SET min_order_price = ${nextMinOrderPrice} WHERE id = ${c.id}`;
     }
   }
 }

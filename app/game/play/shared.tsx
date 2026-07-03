@@ -421,7 +421,7 @@ export function TicketHoldingsTable({
           <h2 className="text-xl font-black">매칭권 보유 현황</h2>
           <p className="muted-label mt-1">
             각 회사 매칭권의 가격은 <strong>이번 라운드 매칭권 최소 주문 금액</strong>
-            (직전 매칭권 단계 승자 중 최저가).
+            (직전 매칭권 단계 승자 중 3등 가격, 없으면 2등 → 1등).
           </p>
         </div>
         <span className="phase-pill">개수</span>
