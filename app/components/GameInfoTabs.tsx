@@ -152,8 +152,8 @@ function HintContent() {
 
       <div className="mt-6">
         <p>즉,</p>
-        <p>• 많은 팀이 모이는 회사 → 평균 <InlineMath latex="+30" />, 범위 약 <InlineMath latex="[0, +100]" /> (안전 + 큰 보상)</p>
-        <p>• 적은 팀만 모이는 회사 → 평균 <InlineMath latex="+10" />, 범위 약 <InlineMath latex="[-30, +80]" /> (변동성 큼)</p>
+        <p>• 많은 팀이 모이는 회사 → 평균 <InlineMath latex="+24.7%" />, 범위 약 <InlineMath latex="[+9.1, +41.5]" /> (안전 + 큰 보상)</p>
+        <p>• 적은 팀만 모이는 회사 → 평균 <InlineMath latex="+17.3%" />, 범위 약 <InlineMath latex="[-7.1, +60.0]" /> (변동성 큼)</p>
         <p>• 어떤 회사든 평균은 양수 — 다만 운 나쁘면 마이너스도 가능</p>
       </div>
 
