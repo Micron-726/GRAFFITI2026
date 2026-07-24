@@ -109,7 +109,7 @@
 
 [lib/game.ts](lib/game.ts) `computeNextState`. admin 의 **"다음 단계로 넘어가기"** 버튼(맨 아래 오른쪽).
 - **stock → results** 전이 시 `settleStockRound` 자동 수익률 정산
-- **matching → next round** 전이 시 `autoResolveMatchingPhase(round, matching_top_n)` 자동 매칭권 정산 (회사별 높은 가격 → 많은 개수 → 낮은 seed 순 상위 N 팀 확정, 그래도 같으면 랜덤, 나머지 80% 환불, 다음 라운드 `min_order_price` = 2등 승자 가격 · 승자 1명이면 그 가격 · 승자 0명이면 유지)
+- **matching → next round** 전이 시 `autoResolveMatchingPhase(round, matching_top_n)` 자동 매칭권 정산 (회사별 높은 가격 → 많은 개수 → 낮은 seed 순 상위 N 팀 확정, 그래도 같으면 랜덤, 나머지 80% 환불, 다음 라운드 `min_order_price` = 2등 승자 가격 · 승자 1명 이하면 유지)
 - **series-c matching → final preference** 전이 (참가자 지망 제출 단계 진입)
 - **final preference → final-result** 전이 시 `computeFinalMatching()` 자동 실행 (지망 순위 > 매칭권 개수 DESC > seed DESC (많이 남은 팀 우선) > random 순으로 배정)
 - **final-result → ended idle** 전이 시 게임 종료
@@ -161,8 +161,7 @@ k = k_scale / (team_count × avg_initial_seed)    ← DB game_state 에서 읽�
 
 매칭권 자동정산 종료 시 회사별 `min_order_price` 는 다음처럼 갱신:
 - **승자 2명 이상**: 2등 승자 가격 (price DESC 정렬 기준 index 1)
-- **승자 1명**: 그 팀의 입찰가
-- **승자 0명**: 기존 값 유지
+- **승자 1명 이하**: 기존 값 유지 (2등 가격이 없으면 갱신 skip)
 
 라운드별 강제 floor 는 없음. 회사 초기 `min_order_price` 는 admin 이 회사 등록 시 지정한 값 (`initial_min_order_price` 로 백업). `opResetGame` 은 `min_order_price = initial_min_order_price` 로 복구.
 
@@ -224,7 +223,7 @@ router.refresh();
 
 ### [lib/game.ts](lib/game.ts) 공유 ops (auth 검증 안 함)
 
-`opSetInvestment`, `opClearInvestment`, `opSetBid`, `opClearBid`, `opSellTickets(round, ...)`, `opAwardBid(round, ...)`, `opRefundFailedBid(round, ...)`, `settleStockRound`, `autoResolveMatchingPhase(round, topN)` — 다음 라운드 `min_order_price` = 2등 승자 가격(승자 1명이면 그 가격, 없으면 유지), `readGameState`, `computeNextState`.
+`opSetInvestment`, `opClearInvestment`, `opSetBid`, `opClearBid`, `opSellTickets(round, ...)`, `opAwardBid(round, ...)`, `opRefundFailedBid(round, ...)`, `settleStockRound`, `autoResolveMatchingPhase(round, topN)` — 다음 라운드 `min_order_price` = 2등 승자 가격(승자 1명 이하면 유지), `readGameState`, `computeNextState`.
 
 ## 라우트 / UI 구조
 

@@ -11,8 +11,7 @@ export const ROUND_ORDER = [
 
 // 매칭권 자동정산 종료 시 다음 라운드의 min_order_price 는
 //   - 승자 2명 이상: 2등 승자 가격
-//   - 승자 1명: 그 팀 가격
-//   - 승자 0명: 유지
+//   - 승자 1명 이하: 기존 값 유지 (2등 가격이 없으므로 갱신 skip)
 // 회사별 초기 min_order_price 는 admin 이 회사 등록 시 설정 (initial_min_order_price 로 백업).
 // 라운드별 강제 floor 는 없음.
 
@@ -408,8 +407,7 @@ async function recordMatchingResult(
 // 상위 topN 팀은 매칭권 확정, 나머지는 80% 환불.
 // 다음 라운드 min_order_price 갱신:
 //   - 승자 2명 이상: 2등 승자 가격
-//   - 승자 1명: 그 팀 가격
-//   - 승자 0명: 기존 값 유지
+//   - 승자 1명 이하: 기존 값 유지 (2등이 없으면 갱신 skip)
 export async function autoResolveMatchingPhase(
   round: string,
   topN: number,
@@ -441,9 +439,8 @@ export async function autoResolveMatchingPhase(
 
     // 다음 라운드 min_order_price 갱신
     // - 승자 2명 이상: 2등 승자 가격
-    // - 승자 1명: 1등 (= 그 팀) 가격
-    // - 승자 0명: 유지
-    const nextMinOrderPrice = winnerPrices[1] ?? winnerPrices[0];
+    // - 승자 1명 이하: 유지 (2등이 없으면 skip)
+    const nextMinOrderPrice = winnerPrices[1];
     if (nextMinOrderPrice !== undefined) {
       await sql`UPDATE companies SET min_order_price = ${nextMinOrderPrice} WHERE id = ${c.id}`;
     }
