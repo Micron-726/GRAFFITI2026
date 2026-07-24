@@ -11,6 +11,10 @@
 *.png
 *.jpg
 *.jpeg
+*.docx
+*.doc
+*.xlsx
+*.xls
 
 # dependencies
 /node_modules
